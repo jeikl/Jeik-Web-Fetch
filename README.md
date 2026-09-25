@@ -1,51 +1,110 @@
-# Jeik-Web-Fetch 🚀
-
-工业级、高性能通用动态网页抓取、多格式转换与工件存储引擎。
-
-完全吸收 生产级无头渲染架构与反爬绕过精髓，以极简、高内聚、易维护的模块化分层架构实现。
+<p align="center">
+  <h1 align="center">Jeik-Web-Fetch 🚀</h1>
+  <p align="center">
+    <strong>Industrial-grade, high-performance web extraction, multi-format transformation, and anti-bot scraper engine.</strong>
+  </p>
+  <p align="center">
+    <a href="./README.zh-CN.md">简体中文</a> | <a href="./README.md">English</a> | <a href="./CHANGELOG.md">Changelog</a>
+  </p>
+</p>
 
 ---
 
-## 🏗️ 架构分层设计 (Clean Architecture)
+## 🌟 Highlights
+
+- **⚡ Zero Heavy Dependencies**: Operates on native Chromium/Chrome/Edge already installed on the host. No bulky Playwright/Node.js runtimes or Docker containers required.
+- **🛡️ Enterprise Stealth Evasion**:
+  - `navigator.webdriver` prototype removal
+  - 1080P physical viewport & media query spoofing (bypasses anti-bot 403 walls on Zhihu, Cloudflare, etc.)
+  - Complete `window.chrome.runtime`, plugins, and permissions emulation
+- **🧩 Monaco / Code Editor In-Memory Penetration**:
+  - Directly extracts models via `window.monaco.editor.getModels().getValue()`
+  - Eliminates virtual scroll code truncation in modern API documentation (e.g., DingTalk OpenAPI)
+- **🔍 Agentic Deep Exploration**:
+  - Automated stepped smooth-scrolling to trigger `IntersectionObserver` and asynchronous API pricing callbacks (e.g., Aliyun `queryPrice`).
+  - Automated drawer/modal scanner to extract hidden terms, FAQ details, and activity rules into a dedicated appendix.
+  - Automated tab traversal across unselected options (`[role="tab"]`).
+- **🧠 Heuristic Content Quality Classifier**: Evaluates text density, tag ratios, and SPA skeleton markers. Fast SSR targets (GitHub, Wikipedia) return cleanly in under 1 second without launching a browser.
+- **🚀 Hybrid Concurrency**: Blends asynchronous CDP I/O with a dedicated `ThreadPoolExecutor` for CPU-heavy HTML parsing and Markdown conversion. Supports parallel multi-URL scraping.
+- **🌐 Encrypted & Custom DNS**: Resolves numeric IPs (`8.8.8.8`) and DNS-over-HTTPS (`--dns https://1.1.1.1/dns-query` / `--dns aliyun`), with complete intranet and public access.
+
+---
+
+## 🏗️ Architecture
 
 ```text
 jeik_web_fetch/
-├── core/                   # 核心领域层 (Domain & Engine)
-│   ├── models.py           # 强类型数据模型 (ScrapeOptions, ScrapeResult, OutputFormat)
-│   └── engine.py           # 常驻浏览器连接池与 CDP 会话驱动引擎 (ScrapeEngine)
-├── transformers/           # 转换器分治层 (Content Processing)
-│   └── content.py          # 多格式流水线 (Markdown/HTML/RawHTML/Text/Links/Metadata)
-├── storage/                # 存储管理层 (Artifacts & Persistence)
-│   └── manager.py          # 临时文件与持久化工件管理 (自动规整安全文件名、按需落盘)
-├── api/                    # 外部服务接口层 (Transport)
-│   └── routes.py           # 高并发异步 FastAPI 路由 (/scrape, /scrape/batch, /docs)
-└── browser.py              # 跨平台环境适配层 (Windows/macOS/Linux/ARM64 浏览器探测)
+├── core/                   # Domain & Engine Layer
+│   ├── models.py           # Typed contracts (ScrapeOptions, ScrapeResult, OutputFormat)
+│   ├── engine.py           # Warm browser pool & CDP lifecycle controller
+│   ├── classifier.py       # Heuristic text density & SPA classifier
+│   └── dns.py              # Custom & DoH encrypted DNS resolvers
+├── transformers/           # Content Transformation Pipeline
+│   └── content.py          # Markdown/HTML/Text/Links/Metadata transformers
+├── storage/                # Artifacts & Persistence
+│   └── manager.py          # Absolute path generator & safe file management
+├── api/                    # Transport Layer
+│   └── routes.py           # Async FastAPI endpoints (/scrape, /scrape/batch, /health)
+├── cli.py                  # Unified CLI logic
+└── browser.py              # Multi-platform browser discovery
 ```
 
 ---
 
-## 🌟 核心特性
+## ⚡ Quick Start
 
-- ⚡ **常驻浏览器池 (Warm Browser Pool)**：毫秒级派发隔离 Tab，极大降低进程启动冷开销，支持高并发批量抓取。
-- 📦 **多目标格式按需输出**：
-  - `markdown`：高保真带表格对齐与 Monaco 代码框提纯
-  - `html` / `rawHtml`：清洗或原始 DOM 镜像
-  - `text`：纯文本结构
-  - `links`：提取结构化超链接列表
-  - `metadata`：提取 SEO 标题、描述与关键词
-- 💾 **临时文件与工件持久化 (Artifacts)**：
-  - 支持 `save_to_file=True`，自动将抓取大文本、HTML 或 Markdown 隔离落盘到系统临时目录或用户指定目录，防止打爆上下文；
-  - 自动生成合规、友好的安全文件名。
-- 🛡️ **生产级反爬探针绕过 (Stealth)**：
-  - `navigator.webdriver` 原型链清洗
-  - 真实物理 1080P 分辨率模拟
-  - 补齐 Chrome 插件与硬件语言特征，稳健穿透知乎、钉钉、阿里云等站点
+### 1. One-Command Binary Installation (Recommended, Zero Python Required)
+
+#### Linux (Ubuntu/Debian/CentOS/Arch, x64 & ARM64) & macOS:
+```bash
+curl -fsSL https://raw.githubusercontent.com/JeikCode/Jeik-Web-Fetch/main/scripts/install.sh | bash
+```
+
+#### Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/JeikCode/Jeik-Web-Fetch/main/scripts/install.ps1 | iex
+```
 
 ---
 
-## 📦 使用指南
+### 2. Jeik CLI Usage
 
-### 1. Python 模块调用
+#### Single URL Scraping:
+```bash
+jeik fetch "https://zhuanlan.zhihu.com/p/25964484"
+```
+*Output begins with an absolute path header, followed by clean, full Markdown:*
+```markdown
+> 当前摘取的完整文档已存到: /path/to/.jeik/fetches/zhuanlan.zhihu.com_xxx.md
+> 如果后续输出被终端或模型窗口截断，可直接使用读取工具读取上述绝对路径获取完整内容。
+
+# Document Title
+...
+```
+
+#### Multi-URL Concurrent Scraping:
+```bash
+jeik fetch "https://url1" "https://url2" "https://url3" -j 4
+```
+
+#### Using Encrypted DNS (DoH):
+```bash
+jeik fetch "https://open.dingtalk.com/..." --dns https://1.1.1.1/dns-query
+```
+
+#### Start High-Concurrency FastAPI Server:
+```bash
+jeik serve --port 8000
+```
+
+#### Self-Uninstall:
+```bash
+jeik uninstall -y
+```
+
+---
+
+### 3. Python SDK Usage
 
 ```python
 import asyncio
@@ -55,47 +114,34 @@ async def main():
     options = ScrapeOptions(
         url="https://open.dingtalk.com/document/development/overview-of-event-subscription",
         formats=[OutputFormat.MARKDOWN, OutputFormat.LINKS],
-        save_to_file=True,     # 自动保存到临时文件
-        output_dir="./dist"    # 可选：指定保存目录
+        save_to_file=True
     )
     result = await default_engine.scrape_url(options)
-    print(f"抓取状态: {result.success}")
-    print(f"生成的 Markdown:\n{result.markdown[:500]}")
-    print(f"保存的文件: {result.saved_files}")
+    print(f"Success: {result.success}, elapsed: {result.elapsed_seconds}s")
+    print(result.markdown[:500])
 
 asyncio.run(main())
 ```
 
-### 2. Jeik CLI 命令行使用 (极简零配置)
+---
 
-```bash
-# 抓取任意 URL (自动在 .jeik/fetches/ 完整归档，并在终端输出全部 Markdown)
-jeik fetch "https://zhuanlan.zhihu.com/p/25964484"
+## 🚀 Branching & Release Pipeline
 
-# 指定加密 DNS (DoH) 或数字 DNS
-jeik fetch "https://open.dingtalk.com/..." --dns https://1.1.1.1/dns-query
-```
-
-### 3. 启动 FastAPI 高并发服务
-
-```bash
-jeik serve --port 8000
-```
-或直接通过 Python：
-```bash
-python bin/jeik serve --port 8000
-```
-启动后访问 `http://localhost:8000/docs` 即可查看 Swagger 交互式文档。
+Following the official **JeikCode release discipline**:
+- **`main`**: Production-ready branch. Official release artifacts are built strictly from this branch.
+- **`beta`**: Feature-staging branch for upcoming releases and community integration.
+- **Tag-Triggered Automated Release**:
+  - Tags matching both `vX.Y.Z` and `X.Y.Z` (e.g. `1.1.0` or `v1.1.0`) trigger the CI/CD pipeline immediately.
+  - Multi-architecture matrix builds:
+    - `jeik-web-fetch-linux-x64`
+    - `jeik-web-fetch-linux-arm64` (built via QEMU)
+    - `jeik-web-fetch-darwin-arm64` (Apple Silicon M-series)
+    - `jeik-web-fetch-darwin-x64` (Intel Mac)
+    - `jeik-web-fetch-windows-x64.exe`
+    - Universal Python Wheel package
 
 ---
 
-## 🚀 跨平台 CI/CD 自动化发版
+## 📄 License
 
-项目配置了完整的 GitHub Actions 流水线（`.github/workflows/release.yml`）：
-- 每次推送形如 `v1.0.0` 的 Git Tag，并发交叉构建：
-  - `jeik-web-fetch-windows-x64.exe`
-  - `jeik-web-fetch-darwin-arm64` (Apple Silicon)
-  - `jeik-web-fetch-darwin-x64` (Intel Mac)
-  - `jeik-web-fetch-linux-x64`
-  - `jeik-web-fetch-linux-arm64` (ARM64 架构)
-  - 通用 Python Wheel 包
+Licensed under the [Apache-2.0 License](./LICENSE).
