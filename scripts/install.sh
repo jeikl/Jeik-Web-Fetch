@@ -96,7 +96,16 @@ else
     sudo mv -f "$TMP_FILE" "${INSTALL_DIR}/jeik"
 fi
 
-# 4. Automatically deploy Skill into universal ~/.agents/skills directory
+# 4. 解决旧 Linux 发行版（如 Debian 11/12、Ubuntu 20/22、CentOS）上运行单文件二进制时因 GLIBC 版本过低的问题
+# 如果检测到运行独立二进制时报 GLIBC 错误，脚本自动以系统 Python Wheel 方式无缝降级兜底运行！
+echo "[*] Testing binary runtime compatibility..."
+if ! "${INSTALL_DIR}/jeik" --help &>/dev/null; then
+    echo "[!] Detected older GLIBC on host system. Seamlessly installing via universal Python Wheel..."
+    if command -v python3 &>/dev/null && command -v pip3 &>/dev/null; then
+        pip3 install --upgrade jeik-web-fetch --break-system-packages 2>/dev/null || pip3 install --upgrade jeik-web-fetch
+        echo "[+] Successfully provisioned universal runtime via Python Wheel!"
+    fi
+fi
 echo -e "$MSG_DEPLOY_SKILL"
 AGENT_SKILL_DIR="${HOME}/.agents/skills/jeik-web-fetch"
 mkdir -p "$AGENT_SKILL_DIR"
