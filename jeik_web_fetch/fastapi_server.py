@@ -296,5 +296,5 @@ async def batch_scrape(req: BatchScrapeRequest):
 
     return {"success": True, "results": data}
 
-def start_fastapi_server(host: str = "0.0.0.0", port: int = 8000):
+def start_fastapi_server(host: str = "0.0.0.0", port: int = 8863):
     uvicorn.run("jeik_web_fetch.fastapi_server:app", host=host, port=port, log_level="info", access_log=False)

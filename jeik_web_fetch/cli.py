@@ -142,10 +142,10 @@ def main():
         help="Custom DNS resolver (numeric IP e.g. 8.8.8.8, or DoH encrypted e.g. https://1.1.1.1/dns-query, default: system)"
     )
 
-    # 2. jeik serve [--port 8000]
+    # 2. jeik serve [--port 8863]
     serve_parser = subparsers.add_parser("serve", help="Start high-concurrency FastAPI HTTP server")
     serve_parser.add_argument("--host", default="0.0.0.0", help="Host address to bind (default: 0.0.0.0)")
-    serve_parser.add_argument("-p", "--port", type=int, default=8000, help="Listening port (default: 8000)")
+    serve_parser.add_argument("-p", "--port", type=int, default=8863, help="Listening port (default: 8863)")
 
     # 3. jeik upgrade
     subparsers.add_parser("upgrade", help="Check and upgrade jeik to the latest release version, then restart")

@@ -1,16 +1,43 @@
 #!/usr/bin/env bash
-# Jeik 官方纯二进制一键在线安装器 (Linux & macOS, 支持 x86_64 与 ARM64)
+# Jeik (Jeik-Web-Fetch) Universal Installer & System Service Provisioner
+# Supports language selection (Default: Chinese, Optional: English)
 set -e
-
-echo "=========================================================="
-echo "    🚀 Jeik (Jeik-Web-Fetch) 纯二进制独立运行一键安装器"
-echo "    (无需安装 Python、Node.js 或 Docker，开箱即用)"
-echo "=========================================================="
 
 REPO="${JEIK_REPO:-JeikCode/Jeik-Web-Fetch}"
 INSTALL_DIR="/usr/local/bin"
+SERVICE_PORT=8863
 
-# 1. 自动检测 OS 与 硬件架构
+# Language detection (Default: zh_CN, supports 'en' / 'zh')
+LANG_OPT="${JEIK_LANG:-zh}"
+if [[ "$*" == *"--lang en"* ]] || [[ "$*" == *"-l en"* ]]; then
+    LANG_OPT="en"
+elif [[ "$*" == *"--lang zh"* ]] || [[ "$*" == *"-l zh"* ]]; then
+    LANG_OPT="zh"
+fi
+
+if [ "$LANG_OPT" = "en" ]; then
+    MSG_BANNER="==========================================================\n    🚀 Jeik (Jeik-Web-Fetch) Universal Binary Installer\n    (Zero dependencies, Standalone Binary & System Service)\n=========================================================="
+    MSG_DETECT="[+] Detected system environment:"
+    MSG_DOWNLOADING="[*] Downloading standalone binary from GitHub Releases..."
+    MSG_DEPLOY_BIN="[*] Deploying binary to ${INSTALL_DIR}/jeik ..."
+    MSG_DEPLOY_SKILL="[*] Deploying jeik-web-fetch skill to ~/.agents/skills/jeik-web-fetch/SKILL.md ..."
+    MSG_SYSTEMD="[*] Configuring systemd background daemon service (jeik-daemon.service)..."
+    MSG_MACOS_DAEMON="[*] Configuring launchd background daemon service for macOS..."
+    MSG_COMPLETE="==========================================================\n    🎉 Installation Complete! Status Summary:\n    • CLI command: jeik fetch <URL>\n    • Persistent Service Port: ${SERVICE_PORT} (Running in background)\n    • Agent Skill: ~/.agents/skills/jeik-web-fetch (Ready for all AI agents)\n=========================================================="
+else
+    MSG_BANNER="==========================================================\n    🚀 Jeik (Jeik-Web-Fetch) 官方纯二进制一键在线安装器\n    (无需任何环境依赖，单文件独立运行 + 自动配置系统常驻服务)\n=========================================================="
+    MSG_DETECT="[+] 成功检测到当前系统架构:"
+    MSG_DOWNLOADING="[*] 正在从 GitHub 官方发布下载独立二进制..."
+    MSG_DEPLOY_BIN="[*] 正在部署可执行文件到系统目录 ${INSTALL_DIR}/jeik ..."
+    MSG_DEPLOY_SKILL="[*] 正在将智能体技能安装到通用目录 ~/.agents/skills/jeik-web-fetch/SKILL.md ..."
+    MSG_SYSTEMD="[*] 正在注册 systemd 系统常驻后台服务 (端口: ${SERVICE_PORT})..."
+    MSG_MACOS_DAEMON="[*] 正在注册 macOS launchd 系统常驻后台服务 (端口: ${SERVICE_PORT})..."
+    MSG_COMPLETE="==========================================================\n    🎉 安装大功告成！状态汇总:\n    • 终端 CLI 命令: jeik fetch <网页URL>\n    • 后台常驻服务端口: ${SERVICE_PORT} (已自动在后台开机自启运行)\n    • 智能体通用技能: ~/.agents/skills/jeik-web-fetch (所有 Agent 均可直接调用)\n=========================================================="
+fi
+
+echo -e "$MSG_BANNER"
+
+# 1. Detect OS & CPU Architecture
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
@@ -22,7 +49,7 @@ case "$OS" in
     PLATFORM="darwin"
     ;;
   *)
-    echo "[-] 暂不支持的操作系统: $OS"
+    echo "[-] Unsupported operating system: $OS"
     exit 1
     ;;
 esac
@@ -35,7 +62,7 @@ case "$ARCH" in
     TARGET_ARCH="arm64"
     ;;
   *)
-    echo "[-] 暂不支持的架构: $ARCH"
+    echo "[-] Unsupported CPU architecture: $ARCH"
     exit 1
     ;;
 esac
@@ -43,63 +70,111 @@ esac
 BINARY_NAME="jeik-web-fetch-${PLATFORM}-${TARGET_ARCH}"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}"
 
-echo "[+] 检测到当前系统环境: ${PLATFORM} (${TARGET_ARCH})"
-echo "[*] 正在从 GitHub 官方发布源下载纯独立二进制..."
+echo "${MSG_DETECT} ${PLATFORM} (${TARGET_ARCH})"
+echo "$MSG_DOWNLOADING"
 echo "    URL: ${DOWNLOAD_URL}"
 
-# 2. 安全下载到临时目录
+# 2. Download binary to temporary destination
 TMP_FILE="$(mktemp /tmp/jeik.XXXXXX)"
 if command -v curl &>/dev/null; then
     curl -fSL "$DOWNLOAD_URL" -o "$TMP_FILE"
 elif command -v wget &>/dev/null; then
     wget -qO "$TMP_FILE" "$DOWNLOAD_URL"
 else
-    echo "[-] 错误: 请先安装 curl 或 wget。"
+    echo "[-] Error: curl or wget is required."
     exit 1
 fi
 
 chmod +x "$TMP_FILE"
 
-# 3. 部署到系统 PATH 目录
-echo "[*] 正在将二进制部署到 ${INSTALL_DIR}/jeik ..."
+# 3. Deploy binary to system PATH
+echo -e "$MSG_DEPLOY_BIN"
 if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMP_FILE" "${INSTALL_DIR}/jeik"
+    mv -f "$TMP_FILE" "${INSTALL_DIR}/jeik"
 else
-    echo "[!] 需要 sudo 权限移动到系统目录:"
-    sudo mv "$TMP_FILE" "${INSTALL_DIR}/jeik"
+    echo "[!] Requesting sudo permission to write to ${INSTALL_DIR}:"
+    sudo mv -f "$TMP_FILE" "${INSTALL_DIR}/jeik"
 fi
 
-# 4. 环境健康检查：提示或自动补齐 Chromium
-HAS_BROWSER=false
-for b in google-chrome google-chrome-stable chromium chromium-browser msedge brave-browser; do
-    if command -v "$b" &>/dev/null; then
-        HAS_BROWSER=true
-        break
-    fi
-done
+# 4. Automatically deploy Skill into universal ~/.agents/skills directory
+echo -e "$MSG_DEPLOY_SKILL"
+AGENT_SKILL_DIR="${HOME}/.agents/skills/jeik-web-fetch"
+mkdir -p "$AGENT_SKILL_DIR"
+cat << 'EOF' > "${AGENT_SKILL_DIR}/SKILL.md"
+---
+name: jeik-web-fetch
+description: "High-performance web extraction tool. Scrapes any URL (SPA, dynamic JS, anti-bot, intranet, or internet) and outputs clean structured Markdown."
+---
 
-if [ "$PLATFORM" = "darwin" ]; then
-    if [ -d "/Applications/Google Chrome.app" ] || [ -d "/Applications/Microsoft Edge.app" ]; then
-        HAS_BROWSER=true
-    fi
-fi
+# Jeik Web Fetch
 
-if [ "$HAS_BROWSER" = false ]; then
-    echo ""
-    echo "[!] 提示: 检测到当前系统尚未安装任何 Chrome/Chromium 浏览器。"
-    echo "    若需要抓取复杂的单页应用 (SPA / 钉钉文档 / 反爬站点)，请运行以下命令一键补齐:"
-    if command -v apt-get &>/dev/null; then
-        echo "    👉 sudo apt-get update && sudo apt-get install -y chromium-browser"
-    elif command -v dnf &>/dev/null; then
-        echo "    👉 sudo dnf install -y chromium"
-    elif command -v brew &>/dev/null; then
-        echo "    👉 brew install --cask google-chrome"
-    fi
+Run the `jeik fetch` command directly in terminal or bash:
+
+```bash
+jeik fetch "<URL>"
+```
+
+### Options (Threads & Custom DNS)
+
+```bash
+# Custom numeric DNS or encrypted DNS (DoH), and multi-worker concurrency
+jeik fetch "<URL>" --dns "https://1.1.1.1/dns-query" -j 4
+```
+
+> Output begins with an absolute path anchor header where the full Markdown has been persisted safely to `.jeik/fetches/`.
+EOF
+
+# 5. Provision persistent background daemon service
+if [ "$PLATFORM" = "linux" ] && command -v systemctl &>/dev/null; then
+    echo -e "$MSG_SYSTEMD"
+    SERVICE_FILE="/etc/systemd/system/jeik-daemon.service"
+    sudo bash -c "cat << EOF > ${SERVICE_FILE}
+[Unit]
+Description=Jeik Web Fetch High-Concurrency Service
+After=network.target
+
+[Service]
+Type=simple
+User=${USER}
+ExecStart=${INSTALL_DIR}/jeik serve --port ${SERVICE_PORT}
+Restart=always
+RestartSec=5
+Environment=PORT=${SERVICE_PORT}
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+    sudo systemctl daemon-reload
+    sudo systemctl enable jeik-daemon.service || true
+    sudo systemctl restart jeik-daemon.service || true
+elif [ "$PLATFORM" = "darwin" ]; then
+    echo -e "$MSG_MACOS_DAEMON"
+    PLIST_FILE="${HOME}/Library/LaunchAgents/com.jeik.webfetch.plist"
+    mkdir -p "${HOME}/Library/LaunchAgents"
+    cat << EOF > "$PLIST_FILE"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jeik.webfetch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${INSTALL_DIR}/jeik</string>
+        <string>serve</string>
+        <string>--port</string>
+        <string>${SERVICE_PORT}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    launchctl unload "$PLIST_FILE" 2>/dev/null || true
+    launchctl load "$PLIST_FILE" 2>/dev/null || true
 fi
 
 echo ""
-echo "=========================================================="
-echo "    🎉 安装大功告成！无需任何 Python 运行环境！"
-echo "    现在你可以在终端直接使用:"
-echo "    👉 jeik fetch \"https://open.dingtalk.com/...\""
-echo "=========================================================="
+echo -e "$MSG_COMPLETE"

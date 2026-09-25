@@ -102,7 +102,7 @@ class WebFetchHandler(BaseHTTPRequestHandler):
         # 简化访问日志
         pass
 
-def run_server(host: str = "0.0.0.0", port: int = 8000):
+def run_server(host: str = "0.0.0.0", port: int = 8863):
     server = HTTPServer((host, port), WebFetchHandler)
     print(f"[*] Jeik-Web-Fetch HTTP Server listening on http://{host}:{port}")
     try:

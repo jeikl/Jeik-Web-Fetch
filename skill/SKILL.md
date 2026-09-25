@@ -1,34 +1,21 @@
 ---
 name: jeik-web-fetch
-description: "抓取任何网页，并转化为 Markdown 文档。当任务执行到中途发现需要抓取网页内容综合分析、或用户需要抓取网页时，使用此技能。"
+description: "High-performance web extraction tool. Scrapes any URL (SPA, dynamic JS, anti-bot, intranet, or internet) and outputs clean structured Markdown."
 ---
 
-# Jeik-Web-Fetch 技能指南
+# Jeik Web Fetch
 
-### 方式 1：CLI 命令行直接调用 (推荐)
-直接在终端或通过 Bash 执行：
+Run the `jeik fetch` command directly in terminal or bash:
+
 ```bash
-python ../Jeik-Web-Fetch/bin/jeik fetch "https://open.dingtalk.com/document/development/overview-of-event-subscription"
+jeik fetch "<URL>"
 ```
 
-### 方式 2：启动并调用本地 HTTP 服务
-在后台启动服务：
+### Options (Threads & Custom DNS)
+
 ```bash
-python ../Jeik-Web-Fetch/bin/jeik serve --port 8000
-```
- POST 调用：
-```bash
-curl -s -X POST http://localhost:8000/scrape \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://docs.volcengine.com/docs"}'
+# Custom numeric DNS or encrypted DNS (DoH), and multi-worker concurrency
+jeik fetch "<URL>" --dns "https://1.1.1.1/dns-query" -j 4
 ```
 
-### 方式 3：Python 调用
-```python
-import sys
-sys.path.insert(0, "../Jeik-Web-Fetch")
-from jeik_web_fetch import fetch
-
-markdown = fetch("https://open.dingtalk.com/document/development/overview-of-event-subscription")
-print(markdown)
-```
+> Output begins with an absolute path anchor header where the full Markdown has been persisted safely to `.jeik/fetches/`.
