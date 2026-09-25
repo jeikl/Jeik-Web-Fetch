@@ -15,7 +15,7 @@ import websockets
 
 from .models import ScrapeOptions, ScrapeResult, OutputFormat
 from .dns import DNSResolverConfig
-from .router import PageRouter
+from .classifier import ContentQualityClassifier
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
@@ -89,12 +89,12 @@ class ScrapeEngine:
 
     async def _try_fast_fetch(self, options: ScrapeOptions) -> Optional[ScrapeResult]:
         """
-        极速分流器：对 GitHub / Wikipedia / 普通服务端渲染网页执行 0.5s 原生 HTTP 获取。
-        若返回的内容有效、非骨架屏且字数充沛，则直接返回，避免唤醒重度无头浏览器！
+        本质性内容质量裁决器（零域名白名单）：
+        - 对任何未知 URL 先以毫秒级 HTTP 探针试探；
+        - 根据“文本密度、语义结构、反爬/SPA 骨架特征”由 ContentQualityClassifier 进行本质裁决；
+        - 只有真实内容充沛且非骨架屏的页面才会直接输出，绝无误判；
+        - 一旦属于 SPA 空壳或风控拦截，毫秒级无感降级至无头浏览器！
         """
-        if PageRouter.is_known_spa(options.url):
-            return None # 明确为 SPA，直接跳过极速流
-
         t0 = time.time()
         try:
             headers = {
@@ -102,15 +102,15 @@ class ScrapeEngine:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             }
-            async with httpx.AsyncClient(follow_redirects=True, timeout=8.0, verify=False) as client:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=6.0, verify=False) as client:
                 res = await client.get(options.url, headers=headers)
-                if res.status_code != 200 or not res.text:
+                
+                # 本质特征裁决
+                is_valid, reason = ContentQualityClassifier.evaluate_html(res.text, res.status_code)
+                if not is_valid:
                     return None
 
                 raw_html = res.text
-                # 骨架屏与反爬风控检测
-                if PageRouter.is_spa_skeleton(raw_html):
-                    return None
 
                 # 快速并行转换
                 loop = asyncio.get_running_loop()
@@ -123,9 +123,8 @@ class ScrapeEngine:
                     None
                 )
 
-                # 如果提取出的正文质量过低（少于 200 字符），回退无头流
                 md = transformed.get("markdown", "")
-                if len(md.strip()) < 200 and not PageRouter.prefer_fast_fetch(options.url):
+                if len(md.strip()) < 200:
                     return None
 
                 saved = {}
