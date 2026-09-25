@@ -8,6 +8,7 @@ import tempfile
 import shutil
 import subprocess
 from typing import Optional, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import websockets
@@ -20,18 +21,20 @@ from ..storage.manager import default_storage
 
 class ScrapeEngine:
     """
-    Jeik-Web-Fetch 核心渲染引擎：
-    - 管理单例/常驻 Chromium 实例连接池
-    - 执行 CDP 会话生命周期与反爬脚本注入
-    - 结合 ContentTransformer 进行多格式派发
+    Jeik-Web-Fetch 核心渲染引擎 (异步 I/O + CPU 密集型多线程混合架构)：
+    - 常驻 Chromium 连接池管理多 Tab 隔离会话
+    - 内置专用 ThreadPoolExecutor 线程池，解决 Python GIL 下巨型 HTML/DOM 转换阻塞事件循环的性能痛点
+    - 结合 ContentTransformer 进行多线程并行提取
     - 结合 StorageManager 自动保存到本地临时文件或指定工程目录
     """
-    def __init__(self, port: int = 9527):
+    def __init__(self, port: int = 9527, thread_workers: Optional[int] = None):
         self.port = port
         self.process: Optional[subprocess.Popen] = None
         self.tmp_dir: Optional[str] = None
         self.bin_path: str = ""
         self._lock = asyncio.Lock()
+        # 针对 CPU 密集的 HTML/DOM/正则/Markdown 转换分配专用多线程池
+        self.executor = ThreadPoolExecutor(max_workers=thread_workers or min(32, (os.cpu_count() or 4) * 2))
 
     async def ensure_started(self, dns: Optional[str] = None):
         async with self._lock:
@@ -222,12 +225,15 @@ class ScrapeEngine:
                             raw_html = str(val)
                         break
 
-            # 多格式转换 (包含抽屉细则高保真挂载)
-            transformed = ContentTransformer.transform(
+            # 多格式转换 (移交给 CPU 密集型多线程池并行处理，完全释放主事件循环)
+            loop = asyncio.get_running_loop()
+            transformed = await loop.run_in_executor(
+                self.executor,
+                ContentTransformer.transform,
                 raw_html,
-                formats=options.formats,
-                only_main_content=options.only_main_content,
-                drawers_text=drawers_text
+                options.formats,
+                options.only_main_content,
+                drawers_text
             )
 
             # 持久化到临时/本地文件（如果指定）

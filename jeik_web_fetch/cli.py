@@ -20,32 +20,59 @@ from .core.engine import default_engine
 from .api.routes import app
 import uvicorn
 
-async def run_fetch(url: str, dns: str = None):
-    options = ScrapeOptions(
-        url=url,
-        formats=[OutputFormat.MARKDOWN],
-        save_to_file=True,
-        output_dir=None,
-        dns=dns,
-        waitFor=4.0
-    )
+async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
+    if len(urls) == 1:
+        # 单 URL 场景：最简流式输出
+        options = ScrapeOptions(
+            url=urls[0],
+            formats=[OutputFormat.MARKDOWN],
+            save_to_file=True,
+            output_dir=None,
+            dns=dns,
+            waitFor=4.0
+        )
+        result = await default_engine.scrape_url(options)
+        await default_engine.stop()
 
-    result = await default_engine.scrape_url(options)
-    await default_engine.stop()
+        if not result.success:
+            print(f"[-] 抓取失败: {result.error}", file=sys.stderr)
+            sys.exit(1)
 
-    if not result.success:
-        print(f"[-] 抓取失败: {result.error}", file=sys.stderr)
-        sys.exit(1)
+        saved_md_path = result.saved_files.get("markdown", "")
+        content = result.markdown or ""
 
-    saved_md_path = result.saved_files.get("markdown", "")
-    content = result.markdown or ""
+        header = (
+            f"> 当前摘取的完整文档已存到: {saved_md_path}\n"
+            f"> 如果后续输出被终端或模型窗口截断，可直接使用读取工具读取上述绝对路径获取完整内容。\n\n"
+        )
+        print(header + content)
+    else:
+        # 多 URL 场景：全异步多线程并发抓取
+        print(f"[*] 正在并发并行抓取 {len(urls)} 个页面 (并发线程数: {max_workers})...\n")
+        options_list = [
+            ScrapeOptions(
+                url=u,
+                formats=[OutputFormat.MARKDOWN],
+                save_to_file=True,
+                output_dir=None,
+                dns=dns,
+                waitFor=4.0
+            ) for u in urls
+        ]
+        results = await default_engine.scrape_urls_concurrent(options_list, max_workers=max_workers)
+        await default_engine.stop()
 
-    header = (
-        f"> 当前摘取的完整文档已存到: {saved_md_path}\n"
-        f"> 如果后续输出被终端或模型窗口截断，可直接使用读取工具读取上述绝对路径获取完整内容。\n\n"
-    )
-
-    print(header + content)
+        print("=" * 60)
+        print("多线程并发抓取任务已全部完成：")
+        print("=" * 60)
+        for i, res in enumerate(results, 1):
+            if res.success:
+                saved = res.saved_files.get("markdown", "")
+                print(f"[{i}/{len(urls)}] ✔ 成功: {res.url} ({res.elapsed_seconds}s)")
+                print(f"      绝对路径: {saved}")
+            else:
+                print(f"[{i}/{len(urls)}] ✘ 失败: {res.url} -> {res.error}")
+        print("\n> 所有完整文档均已安全持久化到上述绝对路径中。")
 
 def run_uninstall(skip_confirm: bool = False):
     """
@@ -82,9 +109,16 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
-    # 1. jeik fetch <url> [--dns <dns>]
-    fetch_parser = subparsers.add_parser("fetch", help="高保真抓取任何网页 (内网/公网/SPA/反爬)，并完整输出为 Markdown")
-    fetch_parser.add_argument("url", help="目标网页绝对 URL (支持内网 IP、域名及公网)")
+    # 1. jeik fetch <url> [<url> ...] [-j / --threads <N>] [--dns <dns>]
+    fetch_parser = subparsers.add_parser("fetch", help="高保真抓取任何网页 (内网/公网/SPA/反爬)，支持多线程并发抓取")
+    fetch_parser.add_argument("urls", nargs="+", help="目标网页绝对 URL (支持 1 个或多个并发抓取)")
+    fetch_parser.add_argument(
+        "-j", "--threads",
+        dest="max_workers",
+        type=int,
+        default=4,
+        help="多线程/多协程并发工作池大小 (默认: 4)"
+    )
     fetch_parser.add_argument(
         "--dns",
         default=None,
@@ -107,7 +141,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "fetch":
-        asyncio.run(run_fetch(args.url, dns=args.dns))
+        asyncio.run(run_fetch(args.urls, dns=args.dns, max_workers=args.max_workers))
     elif args.command == "serve":
         uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
     elif args.command == "uninstall":
