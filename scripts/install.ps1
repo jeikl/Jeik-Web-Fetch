@@ -2,7 +2,7 @@
 # 支持语言选项: 默认中文 (-Language zh)，可选英文 (-Language en)
 param(
     [string]$Language = "zh",
-    [string]$Repo = "JeikCode/Jeik-Web-Fetch"
+    [string]$Repo = "jeikl/Jeik-Web-Fetch"
 )
 
 $ErrorActionPreference = "Stop"

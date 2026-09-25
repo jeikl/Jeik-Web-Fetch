@@ -3,7 +3,7 @@
 # Supports language selection (Default: Chinese, Optional: English)
 set -e
 
-REPO="${JEIK_REPO:-JeikCode/Jeik-Web-Fetch}"
+REPO="${JEIK_REPO:-jeikl/Jeik-Web-Fetch}"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_PORT=8863
 

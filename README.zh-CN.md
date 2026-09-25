@@ -57,12 +57,12 @@ jeik_web_fetch/
 
 #### Linux (Ubuntu/Debian/CentOS/Arch, x64 & ARM64) 与 macOS:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JeikCode/Jeik-Web-Fetch/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jeikl/Jeik-Web-Fetch/main/scripts/install.sh | bash
 ```
 
 #### Windows (PowerShell):
 ```powershell
-irm https://raw.githubusercontent.com/JeikCode/Jeik-Web-Fetch/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/jeikl/Jeik-Web-Fetch/main/scripts/install.ps1 | iex
 ```
 
 ---

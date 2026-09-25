@@ -9,7 +9,7 @@ import urllib.request
 from typing import Optional, Tuple
 from pathlib import Path
 
-GITHUB_REPO = os.environ.get("JEIK_REPO", "JeikCode/Jeik-Web-Fetch")
+GITHUB_REPO = os.environ.get("JEIK_REPO", "jeikl/Jeik-Web-Fetch")
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 class AutoUpdater:
@@ -123,9 +123,9 @@ class AutoUpdater:
         # Execute online installer script
         try:
             if sys.platform.startswith("win"):
-                install_cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JEIK_LANG='en'; irm https://raw.githubusercontent.com/JeikCode/Jeik-Web-Fetch/main/scripts/install.ps1 | iex"]
+                install_cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JEIK_LANG='en'; irm https://raw.githubusercontent.com/jeikl/Jeik-Web-Fetch/main/scripts/install.ps1 | iex"]
             else:
-                install_cmd = ["/bin/bash", "-c", "export JEIK_LANG='en'; curl -fsSL https://raw.githubusercontent.com/JeikCode/Jeik-Web-Fetch/main/scripts/install.sh | bash"]
+                install_cmd = ["/bin/bash", "-c", "export JEIK_LANG='en'; curl -fsSL https://raw.githubusercontent.com/jeikl/Jeik-Web-Fetch/main/scripts/install.sh | bash"]
             
             res = subprocess.run(install_cmd, capture_output=True, text=True)
             if res.returncode == 0:
