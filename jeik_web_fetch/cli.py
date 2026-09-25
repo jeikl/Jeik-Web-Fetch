@@ -48,7 +48,7 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
         print(header + content)
     else:
         # 多 URL 场景：全异步多线程并发抓取
-        print(f"[*] 正在并发并行抓取 {len(urls)} 个页面 (并发线程数: {max_workers})...\n")
+        print(f"[*] Starting concurrent scraping for {len(urls)} URLs (concurrency workers: {max_workers})...\n")
         options_list = [
             ScrapeOptions(
                 url=u,
@@ -63,79 +63,99 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
         await default_engine.stop()
 
         print("=" * 60)
-        print("多线程并发抓取任务已全部完成：")
+        print("Concurrent Scraping Task Summary:")
         print("=" * 60)
         for i, res in enumerate(results, 1):
             if res.success:
                 saved = res.saved_files.get("markdown", "")
-                print(f"[{i}/{len(urls)}] ✔ 成功: {res.url} ({res.elapsed_seconds}s)")
-                print(f"      绝对路径: {saved}")
+                print(f"[{i}/{len(urls)}] ✔ Succeeded: {res.url} ({res.elapsed_seconds}s)")
+                print(f"      Saved: {saved}")
             else:
-                print(f"[{i}/{len(urls)}] ✘ 失败: {res.url} -> {res.error}")
-        print("\n> 所有完整文档均已安全持久化到上述绝对路径中。")
+                print(f"[{i}/{len(urls)}] ✘ Failed: {res.url} -> {res.error}")
+        print("\n> All documents have been persisted to the absolute paths above.")
 
 def run_uninstall(skip_confirm: bool = False):
     """
-    一键卸载 jeik-web-fetch
+    One-click uninstaller for jeik-web-fetch.
     """
     print("=" * 50)
-    print("Jeik CLI 一键自卸载程序")
+    print("Jeik CLI Uninstallation Wizard")
     print("=" * 50)
 
     if not skip_confirm:
         try:
-            choice = input("确定要从当前 Python 环境中完全卸载 jeik-web-fetch 吗？ [y/N]: ").strip().lower()
+            choice = input("Are you sure you want to completely uninstall jeik-web-fetch? [y/N]: ").strip().lower()
             if choice not in ("y", "yes"):
-                print("[-] 已取消卸载。")
+                print("[-] Uninstallation cancelled.")
                 return
         except (KeyboardInterrupt, EOFError):
-            print("\n[-] 已取消操作。")
+            print("\n[-] Operation cancelled.")
             return
 
-    print("[*] 正在执行卸载流程...")
+    print("[*] Uninstalling package...")
     cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "jeik-web-fetch"]
     res = subprocess.run(cmd)
 
     if res.returncode == 0:
-        print("\n[✔] jeik-web-fetch 已成功从系统中卸载！感谢您的使用。")
+        print("\n[✔] jeik-web-fetch successfully removed from system.")
     else:
-        print(f"\n[-] 卸载遇到异常，返回码: {res.returncode}", file=sys.stderr)
+        print(f"\n[-] Uninstallation encountered error with exit code {res.returncode}", file=sys.stderr)
         sys.exit(res.returncode)
 
+def run_upgrade():
+    """
+    One-click upgrade command for jeik-web-fetch:
+    Checks latest GitHub release, waits for idle, applies update, and restarts.
+    """
+    from .core.updater import updater
+    print("=" * 50)
+    print("Jeik CLI Self-Upgrade Program")
+    print("=" * 50)
+    success = updater.perform_upgrade_and_restart(direct_cli=True)
+    if not success:
+        sys.exit(1)
+
 def main():
+    # 启动后台自动更新探测器 (每10分钟自动检查一次，若有更新且当前空闲则无感平滑升级)
+    from .core.updater import updater
+    updater.start_background_daemon()
+
     parser = argparse.ArgumentParser(
         prog="jeik",
-        description="Jeik CLI: 新一代全能极速智能终端套件 (包含抓取、高并发服务、一键卸载)"
+        description="Jeik CLI: High-performance, anti-bot web scraper & markdown extraction toolkit"
     )
-    subparsers = parser.add_subparsers(dest="command", help="子命令")
+    subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
     # 1. jeik fetch <url> [<url> ...] [-j / --threads <N>] [--dns <dns>]
-    fetch_parser = subparsers.add_parser("fetch", help="高保真抓取任何网页 (内网/公网/SPA/反爬)，支持多线程并发抓取")
-    fetch_parser.add_argument("urls", nargs="+", help="目标网页绝对 URL (支持 1 个或多个并发抓取)")
+    fetch_parser = subparsers.add_parser("fetch", help="Scrape any URL (intranet/internet/SPA/anti-bot) into structured Markdown")
+    fetch_parser.add_argument("urls", nargs="+", help="Target URL(s) to scrape (supports parallel multi-URL scraping)")
     fetch_parser.add_argument(
         "-j", "--threads",
         dest="max_workers",
         type=int,
         default=4,
-        help="多线程/多协程并发工作池大小 (默认: 4)"
+        help="Concurrency worker pool size (default: 4)"
     )
     fetch_parser.add_argument(
         "--dns",
         default=None,
-        help="指定 DNS 服务器 (支持数字 IP 如 8.8.8.8, 114.114.114.114，或 DoH 加密 DNS 如 https://1.1.1.1/dns-query，默认系统 DNS)"
+        help="Custom DNS resolver (numeric IP e.g. 8.8.8.8, or DoH encrypted e.g. https://1.1.1.1/dns-query, default: system)"
     )
 
     # 2. jeik serve [--port 8000]
-    serve_parser = subparsers.add_parser("serve", help="启动 FastAPI 高并发 HTTP 服务")
-    serve_parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认: 0.0.0.0)")
-    serve_parser.add_argument("-p", "--port", type=int, default=8000, help="监听端口 (默认: 8000)")
+    serve_parser = subparsers.add_parser("serve", help="Start high-concurrency FastAPI HTTP server")
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Host address to bind (default: 0.0.0.0)")
+    serve_parser.add_argument("-p", "--port", type=int, default=8000, help="Listening port (default: 8000)")
 
-    # 3. jeik uninstall [-y]
-    uninstall_parser = subparsers.add_parser("uninstall", help="从系统中一键卸载 jeik-web-fetch")
-    uninstall_parser.add_argument("-y", "--yes", action="store_true", help="跳过确认提示直接卸载")
+    # 3. jeik upgrade
+    subparsers.add_parser("upgrade", help="Check and upgrade jeik to the latest release version, then restart")
 
-    # 极简模式：直接输入 `jeik https://...` 自动进入 fetch
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in ["fetch", "serve", "uninstall", "help"]:
+    # 4. jeik uninstall [-y]
+    uninstall_parser = subparsers.add_parser("uninstall", help="One-click uninstall jeik-web-fetch from system")
+    uninstall_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+
+    # Shorthand: `jeik https://...` -> auto route to `fetch`
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in ["fetch", "serve", "upgrade", "uninstall", "help"]:
         sys.argv.insert(1, "fetch")
 
     args = parser.parse_args()
@@ -144,6 +164,8 @@ def main():
         asyncio.run(run_fetch(args.urls, dns=args.dns, max_workers=args.max_workers))
     elif args.command == "serve":
         uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+    elif args.command == "upgrade":
+        run_upgrade()
     elif args.command == "uninstall":
         run_uninstall(skip_confirm=args.yes)
     else:

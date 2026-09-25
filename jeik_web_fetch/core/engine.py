@@ -16,6 +16,7 @@ import websockets
 from .models import ScrapeOptions, ScrapeResult, OutputFormat
 from .dns import DNSResolverConfig
 from .classifier import ContentQualityClassifier
+from .updater import updater
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
@@ -154,22 +155,24 @@ class ScrapeEngine:
             return None
 
     async def scrape_url(self, options: ScrapeOptions) -> ScrapeResult:
-        # Tier 1: 极速智能路由（GitHub / SSR 站点 0.5s~1s 秒出）
-        fast_res = await self._try_fast_fetch(options)
-        if fast_res:
-            return fast_res
-
-        # Tier 2: 降级自愈升级至无头浏览器深度探索流
+        updater.enter_task()
+        target_id = None
         t0 = time.time()
-        await self.ensure_started(dns=options.dns)
-
-        async with httpx.AsyncClient() as client:
-            new_tab = await client.put(f"http://127.0.0.1:{self.port}/json/new?{options.url}", timeout=10)
-            tab_info = new_tab.json()
-            target_id = tab_info["id"]
-            ws_url = tab_info["webSocketDebuggerUrl"]
-
         try:
+            # Tier 1: 极速智能路由（GitHub / SSR 站点 0.5s~1s 秒出）
+            fast_res = await self._try_fast_fetch(options)
+            if fast_res:
+                return fast_res
+
+            # Tier 2: 降级自愈升级至无头浏览器深度探索流
+            await self.ensure_started(dns=options.dns)
+
+            async with httpx.AsyncClient() as client:
+                new_tab = await client.put(f"http://127.0.0.1:{self.port}/json/new?{options.url}", timeout=10)
+                tab_info = new_tab.json()
+                target_id = tab_info["id"]
+                ws_url = tab_info["webSocketDebuggerUrl"]
+
             async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
                 # 注入反爬特征
                 stealth_js = """
@@ -348,6 +351,7 @@ class ScrapeEngine:
             )
 
         finally:
+            updater.leave_task()
             try:
                 async with httpx.AsyncClient() as client:
                     await client.get(f"http://127.0.0.1:{self.port}/json/close/{target_id}", timeout=2)
