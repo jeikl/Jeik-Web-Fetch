@@ -1,6 +1,6 @@
 ---
 name: jeik-web-fetch
-description: "抓取任何复杂的动态 JS、SPA、反爬机制的网页，并转化为 Markdown 文档。当任务执行到中途发现需要抓取网页内容综合分析、或用户需要抓取网页时，使用此技能。"
+description: "抓取任何网页，并转化为 Markdown 文档。当任务执行到中途发现需要抓取网页内容综合分析、或用户需要抓取网页时，使用此技能。"
 ---
 
 # Jeik-Web-Fetch 技能指南
