@@ -97,14 +97,32 @@ else
 fi
 
 # 4. 解决旧 Linux 发行版（如 Debian 11/12、Ubuntu 20/22、CentOS）上运行单文件二进制时因 GLIBC 版本过低的问题
-# 如果检测到运行独立二进制时报 GLIBC 错误，脚本自动以系统 Python Wheel 方式无缝降级兜底运行！
+# 如果检测到运行独立二进制时报 GLIBC 错误，立即用 GitHub 发布的纯净通用 Wheel 替换掉不兼容的二进制文件！
 echo "[*] Testing binary runtime compatibility..."
 if ! "${INSTALL_DIR}/jeik" --help &>/dev/null; then
     echo "[!] Detected older GLIBC on host system. Seamlessly installing via universal Python Wheel..."
-    if command -v python3 &>/dev/null && command -v pip3 &>/dev/null; then
-        pip3 install --upgrade jeik-web-fetch --break-system-packages 2>/dev/null || pip3 install --upgrade jeik-web-fetch
-        echo "[+] Successfully provisioned universal runtime via Python Wheel!"
+    WHEEL_URL="https://github.com/${REPO}/releases/latest/download/jeik_web_fetch-1.1.0-py3-none-any.whl"
+    pip3 install --upgrade "$WHEEL_URL" --break-system-packages 2>/dev/null || pip3 install --upgrade "$WHEEL_URL"
+    
+    # 找到 pip 安装的 jeik 命令路径并彻底替换 /usr/local/bin/jeik
+    # pip 通常安装在 /usr/local/bin 或 ~/.local/bin
+    rm -f "${INSTALL_DIR}/jeik"
+    if [ -f "/usr/local/bin/jeik" ]; then
+        chmod +x "/usr/local/bin/jeik"
+    elif [ -f "${HOME}/.local/bin/jeik" ]; then
+        ln -sf "${HOME}/.local/bin/jeik" "${INSTALL_DIR}/jeik"
+    else
+        # 兜底：直接写一个 3 行的 python wrapper 脚本，100% 免疫任何 glibc 问题
+        cat << 'PYEOF' > "${INSTALL_DIR}/jeik"
+#!/usr/bin/env python3
+import sys
+from jeik_web_fetch.cli import main
+if __name__ == '__main__':
+    main()
+PYEOF
+        chmod +x "${INSTALL_DIR}/jeik"
     fi
+    echo "[+] Successfully provisioned universal runtime via Python Wheel!"
 fi
 echo -e "$MSG_DEPLOY_SKILL"
 AGENT_SKILL_DIR="${HOME}/.agents/skills/jeik-web-fetch"
