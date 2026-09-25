@@ -4,12 +4,12 @@ import sys
 # 将上一级目录加入 sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from jeik_web_fetch import firecrawl_fetch
+from jeik_web_fetch import fetch
 
 def test_zhihu_anti_bot():
     url = "https://zhuanlan.zhihu.com/p/25964484"
     print(f"[*] 测试知乎专栏强反爬抓取: {url}")
-    md = firecrawl_fetch(url, wait_render_sec=4.0)
+    md = fetch(url, wait_render_sec=4.0)
     assert len(md) > 2000, "Markdown 长度异常，可能触发反爬"
     assert "知乎" in md or "精华问答" in md
     print(f"[+] 知乎抓取成功，字符数: {len(md)}")

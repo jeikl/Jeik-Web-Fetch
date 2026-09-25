@@ -2,7 +2,8 @@ import json
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from .fetcher import firecrawl_fetch
+from .fetcher import jeik_fetch
+from .fetcher import jeik_fetch as fetch
 
 logger = logging.getLogger("jeik_web_fetch.server")
 
@@ -82,7 +83,7 @@ class WebFetchHandler(BaseHTTPRequestHandler):
 
     def _process_scrape(self, url: str, wait_sec: float = 4.0, timeout: float = 25.0):
         try:
-            md = firecrawl_fetch(url, timeout=timeout, wait_render_sec=wait_sec)
+            md = jeik_fetch(url, timeout=timeout, wait_render_sec=wait_sec)
             self._send_json(200, {
                 "success": True,
                 "data": {

@@ -27,14 +27,14 @@ def _build_ws_frame(payload_dict: dict) -> bytearray:
     header += mask
     return header + bytearray(b ^ mask[i % 4] for i, b in enumerate(raw))
 
-def firecrawl_fetch(
+def jeik_fetch(
     url: str,
     timeout: float = 20.0,
     wait_render_sec: float = 4.0,
     browser_path: Optional[str] = None
 ) -> str:
     """
-    Firecrawl 级别的高性能自愈抓取核心：
+    Jeik-Web-Fetch 原生高性能抓取核心：
     - 无需安装 Playwright / Docker / Node.js
     - 启动系统级 Chrome/Edge，注入多维反爬探针绕过（Webdriver、Plugins、Permissions、Window-size）
     - 采用主动 CDP 会话控制，彻底避免被长轮询或埋点挂起
@@ -232,5 +232,5 @@ def firecrawl_fetch(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 # 统一外部别名
-fetch = firecrawl_fetch
-fetch_markdown = firecrawl_fetch
+fetch = jeik_fetch
+fetch_markdown = jeik_fetch

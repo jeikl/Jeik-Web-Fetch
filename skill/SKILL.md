@@ -10,8 +10,6 @@ description: "抓取任何复杂的动态 JS、SPA、反爬机制的网页，并
 ```bash
 python ../Jeik-Web-Fetch/bin/jeik fetch "https://open.dingtalk.com/document/development/overview-of-event-subscription"
 ```
-（内部已自动在当前目录 `.jeik/fetches/` 完整落盘保存，终端顶部会给出唯一的绝对路径引索，正文不截断输出）。
-
 
 ### 方式 2：启动并调用本地 HTTP 服务
 在后台启动服务：
@@ -29,8 +27,8 @@ curl -s -X POST http://localhost:8000/scrape \
 ```python
 import sys
 sys.path.insert(0, "../Jeik-Web-Fetch")
-from jeik_web_fetch import firecrawl_fetch
+from jeik_web_fetch import fetch
 
-markdown = firecrawl_fetch("https://open.dingtalk.com/document/development/overview-of-event-subscription")
+markdown = fetch("https://open.dingtalk.com/document/development/overview-of-event-subscription")
 print(markdown)
 ```

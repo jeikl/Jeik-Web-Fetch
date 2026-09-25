@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Jeik-Web-Fetch",
     version="1.1.0",
-    description="Firecrawl 级别的高性能通用动态网页抓取、多格式转换与工件存储引擎",
+    description="高性能通用动态网页抓取、多格式转换与工件存储引擎",
     lifespan=lifespan
 )
 
