@@ -6,6 +6,7 @@ Jeik-Web-Fetch: 高性能通用网页抓取与反反爬 Markdown 提取引擎
 from .fetcher import firecrawl_fetch, fetch, fetch_markdown
 from .browser import find_system_browser
 from .converter import html_to_markdown
+from .server import run_server, WebFetchHandler
 
 __version__ = "1.0.0"
 __all__ = [
@@ -14,4 +15,6 @@ __all__ = [
     "fetch_markdown",
     "find_system_browser",
     "html_to_markdown",
+    "run_server",
+    "WebFetchHandler",
 ]
