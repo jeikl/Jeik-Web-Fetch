@@ -14,6 +14,7 @@ setup(
          "websockets>=11.0",
      ],
     scripts=[
+        "bin/jeik",
         "bin/jeik-web-fetch",
     ],
     python_requires=">=3.8",

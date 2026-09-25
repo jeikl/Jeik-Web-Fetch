@@ -13,6 +13,7 @@ import httpx
 import websockets
 
 from .models import ScrapeOptions, ScrapeResult, OutputFormat
+from ..core.dns import DNSResolverConfig
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
@@ -32,7 +33,7 @@ class ScrapeEngine:
         self.bin_path: str = ""
         self._lock = asyncio.Lock()
 
-    async def ensure_started(self):
+    async def ensure_started(self, dns: Optional[str] = None):
         async with self._lock:
             if self.process and self.process.poll() is None:
                 return
@@ -42,6 +43,7 @@ class ScrapeEngine:
                 raise RuntimeError("未检测到本地 Chrome / Edge / Chromium，无法启动渲染引擎。")
 
             self.tmp_dir = tempfile.mkdtemp(prefix="jeik_engine_")
+            dns_args = DNSResolverConfig.build_chrome_args(dns)
             cmd = [
                 self.bin_path,
                 "--headless=new",
@@ -59,8 +61,7 @@ class ScrapeEngine:
                 "--no-default-browser-check",
                 f"--remote-debugging-port={self.port}",
                 f"--user-data-dir={self.tmp_dir}",
-                "about:blank"
-            ]
+            ] + dns_args + ["about:blank"]
             self.process = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
 
             async with httpx.AsyncClient() as client:
@@ -84,7 +85,7 @@ class ScrapeEngine:
 
     async def scrape_url(self, options: ScrapeOptions) -> ScrapeResult:
         t0 = time.time()
-        await self.ensure_started()
+        await self.ensure_started(dns=options.dns)
 
         async with httpx.AsyncClient() as client:
             new_tab = await client.put(f"http://127.0.0.1:{self.port}/json/new?{options.url}", timeout=10)

@@ -76,18 +76,18 @@ jobs:
         shell: bash
         run: |
           pyinstaller --onefile \
-            --name jeik-web-fetch \
+            --name jeik \
             --collect-all bs4 \
-            bin/jeik-web-fetch
+            bin/jeik
 
       - name: Rename Artifact
         shell: bash
         run: |
           mkdir -p release-bin
           if [ "${{ matrix.platform }}" = "windows" ]; then
-            cp dist/jeik-web-fetch.exe release-bin/${{ matrix.artifact_name }}
+            cp dist/jeik.exe release-bin/${{ matrix.artifact_name }}
           else
-            cp dist/jeik-web-fetch release-bin/${{ matrix.artifact_name }}
+            cp dist/jeik release-bin/${{ matrix.artifact_name }}
             chmod +x release-bin/${{ matrix.artifact_name }}
           fi
 
@@ -116,9 +116,9 @@ jobs:
             pip install --upgrade pip &&
             pip install -e . &&
             pip install pyinstaller &&
-            pyinstaller --onefile --name jeik-web-fetch --collect-all bs4 bin/jeik-web-fetch &&
+            pyinstaller --onefile --name jeik --collect-all bs4 bin/jeik &&
             mkdir -p /work/release-bin &&
-            cp dist/jeik-web-fetch /work/release-bin/jeik-web-fetch-linux-arm64 &&
+            cp dist/jeik /work/release-bin/jeik-web-fetch-linux-arm64 &&
             chmod +x /work/release-bin/jeik-web-fetch-linux-arm64
           "
 

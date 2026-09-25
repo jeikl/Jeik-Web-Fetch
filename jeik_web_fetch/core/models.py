@@ -18,6 +18,7 @@ class ScrapeOptions(BaseModel):
     save_to_file: bool = Field(default=False, description="是否自动持久化到本地/临时文件")
     output_dir: Optional[str] = Field(default=None, description="自定义存储目录")
     only_main_content: bool = Field(default=True, description="是否仅保留主体内容（清洗导航/页脚）")
+    dns: Optional[str] = Field(default=None, description="自定义 DNS (支持数字 IP 如 8.8.8.8，或 DoH 加密 DNS 如 https://1.1.1.1/dns-query，默认系统 DNS)")
 
 class ScrapeResult(BaseModel):
     success: bool
