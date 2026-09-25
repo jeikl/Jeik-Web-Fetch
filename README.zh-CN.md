@@ -136,7 +136,6 @@ asyncio.run(main())
     - `jeik-web-fetch-linux-x64`
     - `jeik-web-fetch-linux-arm64` (通过 QEMU 自动化构建)
     - `jeik-web-fetch-darwin-arm64` (Apple Silicon M 系列芯片)
-    - `jeik-web-fetch-darwin-x64` (Intel Mac)
     - `jeik-web-fetch-windows-x64.exe`
     - 通用 Python Wheel 安装包
   - 自动创建 GitHub Release 并挂载发布制品供在线安装器抓取。

@@ -136,7 +136,6 @@ Following the official **JeikCode release discipline**:
     - `jeik-web-fetch-linux-x64`
     - `jeik-web-fetch-linux-arm64` (built via QEMU)
     - `jeik-web-fetch-darwin-arm64` (Apple Silicon M-series)
-    - `jeik-web-fetch-darwin-x64` (Intel Mac)
     - `jeik-web-fetch-windows-x64.exe`
     - Universal Python Wheel package
 

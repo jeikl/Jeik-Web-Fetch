@@ -42,16 +42,11 @@ jobs:
             artifact_name: jeik-web-fetch-windows-x64.exe
             platform: windows
             arch: x64
-          # macOS Apple Silicon (ARM64)
+          # macOS Apple Silicon (ARM64 - Current mainstream Mac)
           - os: macos-latest
             artifact_name: jeik-web-fetch-darwin-arm64
             platform: macos
             arch: arm64
-          # macOS Intel (x64)
-          - os: macos-13
-            artifact_name: jeik-web-fetch-darwin-x64
-            platform: macos
-            arch: x64
           # Linux x64
           - os: ubuntu-latest
             artifact_name: jeik-web-fetch-linux-x64
