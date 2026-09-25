@@ -1,65 +1,91 @@
 # Jeik-Web-Fetch 🚀
 
-高性能、通用网页抓取与反反爬 Markdown 提取引擎。
+工业级、高性能通用动态网页抓取、多格式转换与工件存储引擎。
 
-完全吸收 **Firecrawl 生产级无头渲染架构** 与 **Puppeteer-Stealth 反爬绕过精髓**，以极简、零重量级外部依赖（无需 Playwright/Node/Docker）的原生方式实现。
+完全吸收 **Firecrawl 生产级无头渲染架构** 与 **Puppeteer-Stealth 反爬绕过精髓**，以极简、高内聚、易维护的模块化分层架构实现。
+
+---
+
+## 🏗️ 架构分层设计 (Clean Architecture)
+
+```text
+jeik_web_fetch/
+├── core/                   # 核心领域层 (Domain & Engine)
+│   ├── models.py           # 强类型数据模型 (ScrapeOptions, ScrapeResult, OutputFormat)
+│   └── engine.py           # 常驻浏览器连接池与 CDP 会话驱动引擎 (ScrapeEngine)
+├── transformers/           # 转换器分治层 (Content Processing)
+│   └── content.py          # 多格式流水线 (Markdown/HTML/RawHTML/Text/Links/Metadata)
+├── storage/                # 存储管理层 (Artifacts & Persistence)
+│   └── manager.py          # 临时文件与持久化工件管理 (自动规整安全文件名、按需落盘)
+├── api/                    # 外部服务接口层 (Transport)
+│   └── routes.py           # 高并发异步 FastAPI 路由 (/scrape, /scrape/batch, /docs)
+└── browser.py              # 跨平台环境适配层 (Windows/macOS/Linux/ARM64 浏览器探测)
+```
 
 ---
 
 ## 🌟 核心特性
 
-- ⚡ **零重型外部依赖**：无需安装庞大的 Playwright、Docker 镜像或 Node.js 环境，直接无缝复用系统级已安装的 Chrome / Edge / Chromium。
-- 🛡️ **生产级反爬对抗 (Stealth)**：
-  - 自动化标识抹除（`navigator.webdriver` 原型链清洗）
-  - 1080P 物理视口与媒体查询伪装（规避知乎等对小窗口的 403 拦截）
-  - 硬件环境与 `window.chrome.runtime` 运行结构补齐
-- 🧩 **现代 SPA 代码框原生穿透**：
-  - 原生支持 **Monaco Editor**（VS Code 网页版同款）
-  - 解决前端虚拟滚动（Virtual Scroll）导致的下半部分长代码丢失、截断问题
-  - 完美支持 **CodeMirror / Prism / Highlight.js**
-- 📊 **高保真 Markdown 提取**：
-  - 标题（`#` ~ `######`）层级还原
-  - 表格补齐 Markdown 对齐线（`|---|`）
-  - 自动清洗 `<script>`、`<style>`、无用弹窗与长轮询埋点
+- ⚡ **常驻浏览器池 (Warm Browser Pool)**：毫秒级派发隔离 Tab，极大降低进程启动冷开销，支持高并发批量抓取。
+- 📦 **多目标格式按需输出**：
+  - `markdown`：高保真带表格对齐与 Monaco 代码框提纯
+  - `html` / `rawHtml`：清洗或原始 DOM 镜像
+  - `text`：纯文本结构
+  - `links`：提取结构化超链接列表
+  - `metadata`：提取 SEO 标题、描述与关键词
+- 💾 **临时文件与工件持久化 (Artifacts)**：
+  - 支持 `save_to_file=True`，自动将抓取大文本、HTML 或 Markdown 隔离落盘到系统临时目录或用户指定目录，防止打爆上下文；
+  - 自动生成合规、友好的安全文件名。
+- 🛡️ **生产级反爬探针绕过 (Stealth)**：
+  - `navigator.webdriver` 原型链清洗
+  - 真实物理 1080P 分辨率模拟
+  - 补齐 Chrome 插件与硬件语言特征，稳健穿透知乎、钉钉、阿里云等站点
 
 ---
 
-## 📦 安装与使用
+## 📦 使用指南
 
-### 1. 安装依赖
-```bash
-pip install beautifulsoup4
-```
+### 1. Python 模块调用
 
-### 2. Python 代码中调用
 ```python
-from jeik_web_fetch import firecrawl_fetch
+import asyncio
+from jeik_web_fetch import default_engine, ScrapeOptions, OutputFormat
 
-# 抓取任意复杂的 JS / SPA / 强反爬网页
-markdown = firecrawl_fetch("https://open.dingtalk.com/document/development/event-workflow-instance-change-broadcast")
+async def main():
+    options = ScrapeOptions(
+        url="https://open.dingtalk.com/document/development/overview-of-event-subscription",
+        formats=[OutputFormat.MARKDOWN, OutputFormat.LINKS],
+        save_to_file=True,     # 自动保存到临时文件
+        output_dir="./dist"    # 可选：指定保存目录
+    )
+    result = await default_engine.scrape_url(options)
+    print(f"抓取状态: {result.success}")
+    print(f"生成的 Markdown:\n{result.markdown[:500]}")
+    print(f"保存的文件: {result.saved_files}")
 
-print(markdown)
+asyncio.run(main())
 ```
 
-### 3. 命令行 CLI 调用
+### 2. 启动 FastAPI 高并发服务
+
 ```bash
-python bin/jeik-web-fetch "https://zhuanlan.zhihu.com/p/25964484" -o zhihu.md
+uvicorn jeik_web_fetch.api.routes:app --host 0.0.0.0 --port 8000
 ```
+或直接通过内置 CLI：
+```bash
+python bin/jeik-web-fetch serve --port 8000
+```
+启动后访问 `http://localhost:8000/docs` 即可查看 Swagger 交互式文档。
 
-## 🚀 跨平台全自动化 CI/CD 发版
+---
 
-本项目配置了完整的 GitHub Actions 流水线（`.github/workflows/release.yml`）：
-- **全平台矩阵构建**：每次推送形如 `v1.0.0` 的 Git Tag，自动并发编译覆盖：
-  - Windows x64 (`.exe`)
-  - macOS Apple Silicon (`darwin-arm64`)
-  - macOS Intel (`darwin-x64`)
-  - Linux x64 (`linux-x64`)
-  - Linux ARM64 (`linux-arm64`，通过 QEMU 自动化构建)
-  - 全平台通用的 Python Wheel (`.whl`)
-- **自动发布**：流水线完成后，会自动打包所有平台的单文件独立二进制并生成 GitHub Release 发布制品！
+## 🚀 跨平台 CI/CD 自动化发版
 
-
-- [x] **钉钉开放平台**：全客户端异步 React 渲染，Monaco Editor 内存代码块全量提取。
-- [x] **知乎专栏**：`zse-ck` 强反爬探针穿透，秒级输出万字长文。
-- [x] **火山引擎文档中心**：单页 SPA 300+ 完整超链接与多级分类提取。
-- [x] **阿里云活动页**：电商高并发页面，75 个活动小节与规格参数完整落盘。
+项目配置了完整的 GitHub Actions 流水线（`.github/workflows/release.yml`）：
+- 每次推送形如 `v1.0.0` 的 Git Tag，并发交叉构建：
+  - `jeik-web-fetch-windows-x64.exe`
+  - `jeik-web-fetch-darwin-arm64` (Apple Silicon)
+  - `jeik-web-fetch-darwin-x64` (Intel Mac)
+  - `jeik-web-fetch-linux-x64`
+  - `jeik-web-fetch-linux-arm64` (ARM64 架构)
+  - 通用 Python Wheel 包
