@@ -47,8 +47,8 @@ jobs:
             artifact_name: jeik-web-fetch-darwin-arm64
             platform: macos
             arch: arm64
-          # Linux x64 (基于老版本 Ubuntu 20.04 编译，提供极低 GLIBC 2.31 向上超高兼容性，兼容 Debian 11/12, Ubuntu 20/22/24, CentOS 7/8/9 等所有系统！)
-          - os: ubuntu-20.04
+          # Linux x64 (直接使用主流 ubuntu-latest)
+          - os: ubuntu-latest
             artifact_name: jeik-web-fetch-linux-x64
             platform: linux
             arch: x64
