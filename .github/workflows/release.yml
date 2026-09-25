@@ -42,7 +42,7 @@ jobs:
             artifact_name: jeik-web-fetch-windows-x64.exe
             platform: windows
             arch: x64
-          # macOS Apple Silicon (ARM64 - Current mainstream Mac)
+          # macOS Apple Silicon (ARM64)
           - os: macos-latest
             artifact_name: jeik-web-fetch-darwin-arm64
             platform: macos
@@ -52,6 +52,11 @@ jobs:
             artifact_name: jeik-web-fetch-linux-x64
             platform: linux
             arch: x64
+          # Linux ARM64 (GitHub 官方原生物理 ARM 机器，4核超高速秒出，完全不需要 QEMU 模拟！)
+          - os: ubuntu-24.04-arm
+            artifact_name: jeik-web-fetch-linux-arm64
+            platform: linux
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     steps:
