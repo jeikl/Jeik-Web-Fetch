@@ -14,7 +14,8 @@ import httpx
 import websockets
 
 from .models import ScrapeOptions, ScrapeResult, OutputFormat
-from ..core.dns import DNSResolverConfig
+from .dns import DNSResolverConfig
+from .router import PageRouter
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
@@ -86,7 +87,80 @@ class ScrapeEngine:
                 shutil.rmtree(self.tmp_dir, ignore_errors=True)
                 self.tmp_dir = None
 
+    async def _try_fast_fetch(self, options: ScrapeOptions) -> Optional[ScrapeResult]:
+        """
+        极速分流器：对 GitHub / Wikipedia / 普通服务端渲染网页执行 0.5s 原生 HTTP 获取。
+        若返回的内容有效、非骨架屏且字数充沛，则直接返回，避免唤醒重度无头浏览器！
+        """
+        if PageRouter.is_known_spa(options.url):
+            return None # 明确为 SPA，直接跳过极速流
+
+        t0 = time.time()
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            }
+            async with httpx.AsyncClient(follow_redirects=True, timeout=8.0, verify=False) as client:
+                res = await client.get(options.url, headers=headers)
+                if res.status_code != 200 or not res.text:
+                    return None
+
+                raw_html = res.text
+                # 骨架屏与反爬风控检测
+                if PageRouter.is_spa_skeleton(raw_html):
+                    return None
+
+                # 快速并行转换
+                loop = asyncio.get_running_loop()
+                transformed = await loop.run_in_executor(
+                    self.executor,
+                    ContentTransformer.transform,
+                    raw_html,
+                    options.formats,
+                    options.only_main_content,
+                    None
+                )
+
+                # 如果提取出的正文质量过低（少于 200 字符），回退无头流
+                md = transformed.get("markdown", "")
+                if len(md.strip()) < 200 and not PageRouter.prefer_fast_fetch(options.url):
+                    return None
+
+                saved = {}
+                if options.save_to_file:
+                    if "markdown" in transformed:
+                        saved["markdown"] = default_storage.save_content(options.url, transformed["markdown"], "md", options.output_dir)
+                    if "html" in transformed:
+                        saved["html"] = default_storage.save_content(options.url, transformed["html"], "html", options.output_dir)
+                    if "rawHtml" in transformed:
+                        saved["rawHtml"] = default_storage.save_content(options.url, transformed["rawHtml"], "raw.html", options.output_dir)
+                    if "text" in transformed:
+                        saved["text"] = default_storage.save_content(options.url, transformed["text"], "txt", options.output_dir)
+
+                return ScrapeResult(
+                    success=True,
+                    url=options.url,
+                    markdown=transformed.get("markdown"),
+                    html=transformed.get("html"),
+                    rawHtml=transformed.get("rawHtml"),
+                    text=transformed.get("text"),
+                    links=transformed.get("links"),
+                    metadata=transformed.get("metadata", {}),
+                    saved_files=saved,
+                    elapsed_seconds=round(time.time() - t0, 2)
+                )
+        except Exception:
+            return None
+
     async def scrape_url(self, options: ScrapeOptions) -> ScrapeResult:
+        # Tier 1: 极速智能路由（GitHub / SSR 站点 0.5s~1s 秒出）
+        fast_res = await self._try_fast_fetch(options)
+        if fast_res:
+            return fast_res
+
+        # Tier 2: 降级自愈升级至无头浏览器深度探索流
         t0 = time.time()
         await self.ensure_started(dns=options.dns)
 
