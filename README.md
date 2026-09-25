@@ -46,9 +46,18 @@ print(markdown)
 python bin/jeik-web-fetch "https://zhuanlan.zhihu.com/p/25964484" -o zhihu.md
 ```
 
----
+## 🚀 跨平台全自动化 CI/CD 发版
 
-## 🧪 验证过的典型高难度站点
+本项目配置了完整的 GitHub Actions 流水线（`.github/workflows/release.yml`）：
+- **全平台矩阵构建**：每次推送形如 `v1.0.0` 的 Git Tag，自动并发编译覆盖：
+  - Windows x64 (`.exe`)
+  - macOS Apple Silicon (`darwin-arm64`)
+  - macOS Intel (`darwin-x64`)
+  - Linux x64 (`linux-x64`)
+  - Linux ARM64 (`linux-arm64`，通过 QEMU 自动化构建)
+  - 全平台通用的 Python Wheel (`.whl`)
+- **自动发布**：流水线完成后，会自动打包所有平台的单文件独立二进制并生成 GitHub Release 发布制品！
+
 
 - [x] **钉钉开放平台**：全客户端异步 React 渲染，Monaco Editor 内存代码块全量提取。
 - [x] **知乎专栏**：`zse-ck` 强反爬探针穿透，秒级输出万字长文。

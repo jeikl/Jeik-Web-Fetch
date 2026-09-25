@@ -36,7 +36,7 @@ def find_system_browser() -> str:
             return path
 
     # PATH 环境变量解析
-    for name in ["google-chrome", "chrome", "msedge", "edge", "chromium", "brave"]:
+    for name in ["google-chrome", "google-chrome-stable", "chrome", "msedge", "edge", "chromium", "chromium-browser", "brave", "brave-browser"]:
         found = shutil.which(name)
         if found:
             return found

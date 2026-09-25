@@ -1,0 +1,152 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # 1. 构建全平台通用 Wheel 与 Source 包
+  build-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Upload Wheel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-wheel
+          path: dist/*
+
+  # 2. 矩阵构建各系统单文件可执行文件 (含 ARM64)
+  build-binaries:
+    needs: [build-wheel]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x64
+          - os: windows-latest
+            artifact_name: jeik-web-fetch-windows-x64.exe
+            platform: windows
+            arch: x64
+          # macOS Apple Silicon (ARM64)
+          - os: macos-latest
+            artifact_name: jeik-web-fetch-darwin-arm64
+            platform: macos
+            arch: arm64
+          # macOS Intel (x64)
+          - os: macos-13
+            artifact_name: jeik-web-fetch-darwin-x64
+            platform: macos
+            arch: x64
+          # Linux x64
+          - os: ubuntu-latest
+            artifact_name: jeik-web-fetch-linux-x64
+            platform: linux
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Package with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller --onefile \
+            --name jeik-web-fetch \
+            --collect-all bs4 \
+            bin/jeik-web-fetch
+
+      - name: Rename Artifact
+        shell: bash
+        run: |
+          mkdir -p release-bin
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            cp dist/jeik-web-fetch.exe release-bin/${{ matrix.artifact_name }}
+          else
+            cp dist/jeik-web-fetch release-bin/${{ matrix.artifact_name }}
+            chmod +x release-bin/${{ matrix.artifact_name }}
+          fi
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release-bin/*
+
+  # 3. Linux ARM64 (QEMU 交叉构建)
+  build-linux-arm64:
+    needs: [build-wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Build inside ARM64 Docker container
+        run: |
+          docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/work -w /work python:3.11-slim /bin/bash -c "
+            apt-get update && apt-get install -y build-essential &&
+            pip install --upgrade pip &&
+            pip install -e . &&
+            pip install pyinstaller &&
+            pyinstaller --onefile --name jeik-web-fetch --collect-all bs4 bin/jeik-web-fetch &&
+            mkdir -p /work/release-bin &&
+            cp dist/jeik-web-fetch /work/release-bin/jeik-web-fetch-linux-arm64 &&
+            chmod +x /work/release-bin/jeik-web-fetch-linux-arm64
+          "
+
+      - name: Upload Linux ARM64 Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: jeik-web-fetch-linux-arm64
+          path: release-bin/*
+
+  # 4. 汇总所有平台的产物并自动发布到 GitHub Release
+  release:
+    needs: [build-wheel, build-binaries, build-linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-dist
+          merge-multiple: true
+
+      - name: Display files to be released
+        run: ls -la all-dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: all-dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
