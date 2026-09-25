@@ -78,6 +78,10 @@ jobs:
           pyinstaller --onefile \
             --name jeik \
             --collect-all bs4 \
+            --collect-all fastapi \
+            --collect-all uvicorn \
+            --collect-all httpx \
+            --collect-all websockets \
             bin/jeik
 
       - name: Rename Artifact
@@ -116,7 +120,7 @@ jobs:
             pip install --upgrade pip &&
             pip install -e . &&
             pip install pyinstaller &&
-            pyinstaller --onefile --name jeik --collect-all bs4 bin/jeik &&
+            pyinstaller --onefile --name jeik --collect-all bs4 --collect-all fastapi --collect-all uvicorn --collect-all httpx --collect-all websockets bin/jeik &&
             mkdir -p /work/release-bin &&
             cp dist/jeik /work/release-bin/jeik-web-fetch-linux-arm64 &&
             chmod +x /work/release-bin/jeik-web-fetch-linux-arm64
