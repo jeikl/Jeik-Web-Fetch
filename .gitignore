@@ -50,3 +50,10 @@ Thumbs.db
 .jeik/
 *.log
 *.tmp
+
+# Tests & test caches
+tests/
+test/
+.pytest_cache/
+.coverage
+htmlcov/
