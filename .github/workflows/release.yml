@@ -73,7 +73,26 @@ jobs:
           pip install -e .
           pip install pyinstaller
 
-      - name: Package with PyInstaller
+      # Linux 构建时使用包含极低 GLIBC 2.31 的 Debian 11 容器执行 PyInstaller 打包
+      # 从而实现真正的全版本 Linux 兼容（兼容 CentOS 7/8/9, Debian 10/11/12, Ubuntu 18/20/22/24 等所有 Linux！）
+      - name: Package with PyInstaller (Linux Compatibility Container)
+        if: matrix.platform == 'linux'
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/work -w /work python:3.11-bullseye /bin/bash -c "
+            pip install --upgrade pip &&
+            pip install -e . &&
+            pip install pyinstaller &&
+            pyinstaller --onefile --name jeik \
+              --collect-all bs4 \
+              --collect-all fastapi \
+              --collect-all uvicorn \
+              --collect-all httpx \
+              --collect-all websockets \
+              bin/jeik
+          "
+
+      - name: Package with PyInstaller (Native macOS / Windows)
+        if: matrix.platform != 'linux'
         shell: bash
         run: |
           pyinstaller --onefile \
