@@ -7,6 +7,7 @@ from .fetcher import firecrawl_fetch, fetch, fetch_markdown
 from .browser import find_system_browser
 from .converter import html_to_markdown
 from .server import run_server, WebFetchHandler
+from .fastapi_server import app, start_fastapi_server, browser_pool
 
 __version__ = "1.0.0"
 __all__ = [
@@ -17,4 +18,7 @@ __all__ = [
     "html_to_markdown",
     "run_server",
     "WebFetchHandler",
+    "app",
+    "start_fastapi_server",
+    "browser_pool",
 ]

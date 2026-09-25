@@ -6,11 +6,11 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import argparse
-from jeik_web_fetch import firecrawl_fetch, run_server
+from jeik_web_fetch import firecrawl_fetch, run_server, start_fastapi_server
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Jeik-Web-Fetch: 高性能通用网页抓取与反反爬 Markdown 提取工具 (CLI / HTTP Server)"
+        description="Jeik-Web-Fetch: 高性能通用网页抓取与反反爬 Markdown 提取工具 (CLI / FastAPI Server)"
     )
     subparsers = parser.add_subparsers(dest="command", help="运行模式")
 
@@ -21,8 +21,8 @@ def main():
     fetch_parser.add_argument("-w", "--wait", type=float, default=4.0, help="页面异步渲染等待时间 (默认: 4s)")
     fetch_parser.add_argument("-o", "--output", help="输出 Markdown 文件路径 (默认打印到标准输出)")
 
-    # 2. 服务端命令: jeik-web-fetch serve
-    serve_parser = subparsers.add_parser("serve", help="启动 HTTP API 服务")
+    # 2. 高并发服务命令: jeik-web-fetch serve (FastAPI 异步高并发驱动)
+    serve_parser = subparsers.add_parser("serve", help="启动 FastAPI 高并发 HTTP 服务")
     serve_parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认: 0.0.0.0)")
     serve_parser.add_argument("-p", "--port", type=int, default=8000, help="监听端口 (默认: 8000)")
 
@@ -33,8 +33,12 @@ def main():
     args = parser.parse_args()
 
     if args.command == "serve":
-        run_server(host=args.host, port=args.port)
-        return
+         try:
+             start_fastapi_server(host=args.host, port=args.port)
+         except Exception:
+             # 如果环境缺失某些库，回退到无依赖轻量 server
+             run_server(host=args.host, port=args.port)
+         return
 
     if args.command == "fetch":
         try:

@@ -7,8 +7,12 @@ setup(
     author="JeikCode Team",
     packages=find_packages(),
     install_requires=[
-        "beautifulsoup4>=4.11.0",
-    ],
+         "beautifulsoup4>=4.11.0",
+         "fastapi>=0.100.0",
+         "uvicorn>=0.20.0",
+         "httpx>=0.24.0",
+         "websockets>=11.0",
+     ],
     scripts=[
         "bin/jeik-web-fetch",
     ],
