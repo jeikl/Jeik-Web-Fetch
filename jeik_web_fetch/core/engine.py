@@ -120,52 +120,114 @@ class ScrapeEngine:
                 # 等待渲染就绪
                 await asyncio.sleep(options.waitFor)
 
-                # 提取完整 DOM (含 Monaco Editor 内存穿透)
-                dom_extract_js = """
-                (() => {
+                # 4. 深度交互探索 (若开启 deep_explore)
+                # 包含：步进平滑滚动结算价格、遍历所有 Tab、点击并采集所有隐藏活动规则/FAQ 抽屉
+                dom_extract_js = r"""
+                (async () => {
+                    const extractedDrawers = [];
+
+                    // 1. 深度平滑步进滚动（触发 IntersectionObserver 异步询价与懒加载）
+                    const totalH = document.body.scrollHeight;
+                    for (let y = 0; y < totalH; y += 1200) {
+                        window.scrollTo(0, y);
+                        await new Promise(r => setTimeout(r, 60));
+                    }
+                    window.scrollTo(0, 0);
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    // 2. 扫描并点击【活动规则 / 细则 / FAQ / 须知】抽屉弹窗
+                    const ruleLinks = Array.from(document.querySelectorAll("a, button, span")).filter(
+                        e => e.innerText && /活动规则|详细细则|规则说明|使用须知/i.test(e.innerText.trim()) && e.innerText.trim().length <= 10
+                    );
+                    for (let i = 0; i < Math.min(ruleLinks.length, 10); i++) {
+                        const btn = ruleLinks[i];
+                        try {
+                            btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await new Promise(r => setTimeout(r, 450));
+                            const drawer = document.querySelector(".next-drawer, [role=\"dialog\"], .next-dialog, .ant-modal, .ant-drawer");
+                            if (drawer && drawer.innerText) {
+                                const txt = drawer.innerText.trim();
+                                if (txt && !extractedDrawers.includes(txt)) {
+                                    extractedDrawers.push(txt);
+                                }
+                            }
+                            const close = document.querySelector(".next-drawer-close, .next-dialog-close, [aria-label=\"Close\"], .ant-modal-close");
+                            if (close) {
+                                close.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                                await new Promise(r => setTimeout(r, 150));
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 3. 遍历未激活的选项卡 (Tab Switching)
+                    const tabs = Array.from(document.querySelectorAll("[role=\"tab\"], .next-tabs-tab, .ant-tabs-tab, .tab-item"));
+                    for (let i = 0; i < Math.min(tabs.length, 15); i++) {
+                        const t = tabs[i];
+                        try {
+                            t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await new Promise(r => setTimeout(r, 200));
+                        } catch(e) {}
+                    }
+
+                    // 4. Monaco Editor 内存模型还原 (杜绝长代码截断)
                     if (window.monaco && window.monaco.editor) {
                         const models = window.monaco.editor.getModels();
-                        const editors = document.querySelectorAll('.monaco-editor');
+                        const editors = document.querySelectorAll(".monaco-editor");
                         editors.forEach((ed, idx) => {
                             const model = models[idx] || (models.length === 1 ? models[0] : null);
                             if (model) {
-                                const pre = document.createElement('pre');
-                                const code = document.createElement('code');
+                                const pre = document.createElement("pre");
+                                const code = document.createElement("code");
                                 code.textContent = model.getValue();
                                 pre.appendChild(code);
                                 ed.replaceWith(pre);
                             }
                         });
                     }
-                    document.querySelectorAll('.CodeMirror').forEach(cm => {
+
+                    // 5. CodeMirror 还原
+                    document.querySelectorAll(".CodeMirror").forEach(cm => {
                         if (cm.CodeMirror) {
-                            const pre = document.createElement('pre');
-                            const code = document.createElement('code');
+                            const pre = document.createElement("pre");
+                            const code = document.createElement("code");
                             code.textContent = cm.CodeMirror.getValue();
                             pre.appendChild(code);
                             cm.replaceWith(pre);
                         }
                     });
-                    document.querySelectorAll('details:not([open])').forEach(d => d.setAttribute('open', 'true'));
-                    return document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML;
+
+                    // 6. 展开常见折叠抽屉
+                    document.querySelectorAll("details:not([open])").forEach(d => d.setAttribute("open", "true"));
+
+                    return {
+                        html: document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML,
+                        drawers: extractedDrawers.join("\n\n")
+                    };
                 })()
                 """
-                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": dom_extract_js, "returnByValue": True}}))
+                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": dom_extract_js, "awaitPromise": True, "returnByValue": True}}))
 
                 # 接收完整响应
                 raw_html = ""
+                drawers_text = ""
                 while True:
                     msg_str = await asyncio.wait_for(ws.recv(), timeout=options.timeout)
                     msg = json.loads(msg_str)
                     if msg.get("id") == 1:
-                        raw_html = msg.get("result", {}).get("result", {}).get("value", "")
+                        val = msg.get("result", {}).get("result", {}).get("value", {})
+                        if isinstance(val, dict):
+                            raw_html = val.get("html", "")
+                            drawers_text = val.get("drawers", "")
+                        else:
+                            raw_html = str(val)
                         break
 
-            # 多格式转换
+            # 多格式转换 (包含抽屉细则高保真挂载)
             transformed = ContentTransformer.transform(
                 raw_html,
                 formats=options.formats,
-                only_main_content=options.only_main_content
+                only_main_content=options.only_main_content,
+                drawers_text=drawers_text
             )
 
             # 持久化到临时/本地文件（如果指定）
@@ -192,6 +254,7 @@ class ScrapeEngine:
                 rawHtml=transformed.get("rawHtml"),
                 text=transformed.get("text"),
                 links=transformed.get("links"),
+                drawers=drawers_text if drawers_text else None,
                 metadata=transformed.get("metadata", {}),
                 saved_files=saved,
                 elapsed_seconds=round(time.time() - t0, 2)
@@ -211,6 +274,26 @@ class ScrapeEngine:
                     await client.get(f"http://127.0.0.1:{self.port}/json/close/{target_id}", timeout=2)
             except Exception:
                 pass
+
+    async def scrape_urls_concurrent(
+        self,
+        options_list: List[ScrapeOptions],
+        max_workers: int = 4
+    ) -> List[ScrapeResult]:
+        """
+        高并发多线程/多协程并行遍历：
+        - 结合 asyncio.Semaphore 限制最大并行 Tab 数量，防止内存与连接过载
+        - 在常驻 Chromium 池中并发开辟多个隔离 Target 标签页同时执行
+        """
+        await self.ensure_started()
+        sem = asyncio.Semaphore(max_workers)
+
+        async def worker(opt: ScrapeOptions) -> ScrapeResult:
+            async with sem:
+                return await self.scrape_url(opt)
+
+        tasks = [worker(opt) for opt in options_list]
+        return await asyncio.gather(*tasks)
 
 # 全局默认引擎实例
 default_engine = ScrapeEngine()

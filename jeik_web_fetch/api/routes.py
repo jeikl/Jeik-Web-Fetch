@@ -68,7 +68,6 @@ async def scrape_post(options: ScrapeOptions):
 
 @app.post("/scrape/batch")
 async def batch_scrape(options_list: List[ScrapeOptions]):
-    """全异步批量并发抓取"""
-    tasks = [default_engine.scrape_url(opt) for opt in options_list]
-    results = await asyncio.gather(*tasks)
+    """多线程/多协程高并发批量抓取"""
+    results = await default_engine.scrape_urls_concurrent(options_list, max_workers=8)
     return {"success": True, "count": len(results), "results": results}

@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 from bs4 import BeautifulSoup
 from ..core.models import OutputFormat
 
@@ -43,7 +43,8 @@ class ContentTransformer:
         cls,
         raw_html: str,
         formats: List[OutputFormat],
-        only_main_content: bool = True
+        only_main_content: bool = True,
+        drawers_text: Optional[str] = None
     ) -> Dict[str, Any]:
         result = {}
 
@@ -143,6 +144,13 @@ class ContentTransformer:
             md_text = work_soup.get_text()
             md_text = re.sub(r"[ \t]+", " ", md_text)
             md_text = re.sub(r"\n\s*\n\s*\n+", "\n\n", md_text)
+            
+            # 如果提取到了抽屉/弹窗中的详细规则与细则，高保真挂载在附录章节中
+            if drawers_text and drawers_text.strip():
+                clean_drawers = re.sub(r"[ \t]+", " ", drawers_text.strip())
+                clean_drawers = re.sub(r"\n\s*\n\s*\n+", "\n\n", clean_drawers)
+                md_text += f"\n\n---\n\n## 📋 附录：详细活动规则与细则（弹窗/抽屉完整提取）\n\n{clean_drawers}"
+
             result["markdown"] = md_text.strip()
 
         return result
