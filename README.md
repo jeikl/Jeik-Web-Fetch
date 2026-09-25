@@ -66,14 +66,24 @@ async def main():
 asyncio.run(main())
 ```
 
-### 2. 启动 FastAPI 高并发服务
+### 2. Jeik CLI 命令行使用 (极简零配置)
 
 ```bash
-uvicorn jeik_web_fetch.api.routes:app --host 0.0.0.0 --port 8000
+# 抓取任意 URL (自动在 .jeik/fetches/ 完整归档，并在终端输出全部 Markdown)
+jeik fetch "https://zhuanlan.zhihu.com/p/25964484"
+
+# 指定加密 DNS (DoH) 或数字 DNS
+jeik fetch "https://open.dingtalk.com/..." --dns https://1.1.1.1/dns-query
 ```
-或直接通过内置 CLI：
+
+### 3. 启动 FastAPI 高并发服务
+
 ```bash
-python bin/jeik-web-fetch serve --port 8000
+jeik serve --port 8000
+```
+或直接通过 Python：
+```bash
+python bin/jeik serve --port 8000
 ```
 启动后访问 `http://localhost:8000/docs` 即可查看 Swagger 交互式文档。
 
