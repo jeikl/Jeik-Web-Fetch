@@ -134,10 +134,9 @@ asyncio.run(main())
   - 监听所有形如 `[0-9]+.[0-9]+.[0-9]+*` 以及 `v*` 的标签（例如直接打 `1.1.0` 或 `v1.1.0` 均可直接触发！）；
   - 全并发矩阵构建 6 套发布产物：
     - `jeik-web-fetch-linux-x64`
-    - `jeik-web-fetch-linux-arm64` (通过 QEMU 自动化构建)
     - `jeik-web-fetch-darwin-arm64` (Apple Silicon M 系列芯片)
     - `jeik-web-fetch-windows-x64.exe`
-    - 通用 Python Wheel 安装包
+    - 全平台通用的 Python Wheel 安装包 (Linux ARM64/x64 原生直接跑)
   - 自动创建 GitHub Release 并挂载发布制品供在线安装器抓取。
 
 ---

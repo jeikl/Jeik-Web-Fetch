@@ -97,40 +97,9 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: release-bin/*
 
-  # 3. Linux ARM64 (QEMU 交叉构建)
-  build-linux-arm64:
-    needs: [build-wheel]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/arm64
-
-      - name: Build inside ARM64 Docker container
-        run: |
-          docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/work -w /work python:3.11-slim /bin/bash -c "
-            apt-get update && apt-get install -y build-essential &&
-            pip install --upgrade pip &&
-            pip install -e . &&
-            pip install pyinstaller &&
-            pyinstaller --onefile --name jeik --collect-all bs4 --collect-all fastapi --collect-all uvicorn --collect-all httpx --collect-all websockets bin/jeik &&
-            mkdir -p /work/release-bin &&
-            cp dist/jeik /work/release-bin/jeik-web-fetch-linux-arm64 &&
-            chmod +x /work/release-bin/jeik-web-fetch-linux-arm64
-          "
-
-      - name: Upload Linux ARM64 Binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: jeik-web-fetch-linux-arm64
-          path: release-bin/*
-
-  # 4. 汇总所有平台的产物并自动发布到 GitHub Release
+  # 3. 汇总所有平台的产物并自动发布到 GitHub Release
   release:
-    needs: [build-wheel, build-binaries, build-linux-arm64]
+    needs: [build-wheel, build-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

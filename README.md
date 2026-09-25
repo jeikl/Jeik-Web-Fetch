@@ -134,10 +134,9 @@ Following the official **JeikCode release discipline**:
   - Tags matching both `vX.Y.Z` and `X.Y.Z` (e.g. `1.1.0` or `v1.1.0`) trigger the CI/CD pipeline immediately.
   - Multi-architecture matrix builds:
     - `jeik-web-fetch-linux-x64`
-    - `jeik-web-fetch-linux-arm64` (built via QEMU)
     - `jeik-web-fetch-darwin-arm64` (Apple Silicon M-series)
     - `jeik-web-fetch-windows-x64.exe`
-    - Universal Python Wheel package
+    - Universal Python Wheel package (works natively on Linux ARM64, macOS, Windows)
 
 ---
 
