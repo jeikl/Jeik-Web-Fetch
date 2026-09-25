@@ -83,6 +83,7 @@ jobs:
             pip install -e . &&
             pip install pyinstaller &&
             pyinstaller --onefile --name jeik \
+              --collect-all jeik_web_fetch \
               --collect-all bs4 \
               --collect-all fastapi \
               --collect-all uvicorn \
@@ -97,6 +98,7 @@ jobs:
         run: |
           pyinstaller --onefile \
             --name jeik \
+            --collect-all jeik_web_fetch \
             --collect-all bs4 \
             --collect-all fastapi \
             --collect-all uvicorn \
