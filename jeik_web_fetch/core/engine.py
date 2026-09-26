@@ -196,8 +196,29 @@ class ScrapeEngine:
                 """
                 await ws.send(json.dumps({"id": 999, "method": "Runtime.evaluate", "params": {"expression": stealth_js}}))
 
-                # 等待渲染就绪
-                await asyncio.sleep(options.waitFor)
+                # 3. 动态智能内容就绪侦听 (Dynamic Content Settle)
+                # 替代固定的 sleep 傻等，只要页面出现实质文字且脱离 Loading 状态，立即提前进入提取！
+                poll_js = r"""
+                (() => {
+                    const text = document.body ? document.body.innerText : "";
+                    const hasSubstance = text.length > 500 && !text.includes("Loading...");
+                    return hasSubstance;
+                })()
+                """
+                settled = False
+                max_polls = int(options.waitFor * 10)
+                for _ in range(max_polls):
+                    await asyncio.sleep(0.1)
+                    await ws.send(json.dumps({
+                        "id": 888,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": poll_js, "returnByValue": True}
+                    }))
+                    msg_str = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    msg_obj = json.loads(msg_str)
+                    if msg_obj.get("id") == 888 and msg_obj.get("result", {}).get("result", {}).get("value") is True:
+                        settled = True
+                        break
 
                 # 4. 深度交互探索 (若开启 deep_explore)
                 # 包含：步进平滑滚动结算价格、遍历所有 Tab、点击并采集所有隐藏活动规则/FAQ 抽屉

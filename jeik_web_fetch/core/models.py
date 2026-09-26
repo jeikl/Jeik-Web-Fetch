@@ -13,7 +13,7 @@ class OutputFormat(str, Enum):
 class ScrapeOptions(BaseModel):
     url: str = Field(..., description="目标网页绝对 URL")
     formats: List[OutputFormat] = Field(default=[OutputFormat.MARKDOWN], description="输出格式列表")
-    waitFor: float = Field(default=3.5, description="页面渲染与异步 API 缓冲等待时间 (秒)")
+    waitFor: float = Field(default=2.0, description="页面渲染初始缓冲时间 (秒)")
     timeout: float = Field(default=25.0, description="请求超时时间 (秒)")
     save_to_file: bool = Field(default=False, description="是否自动持久化到本地/临时文件")
     output_dir: Optional[str] = Field(default=None, description="自定义存储目录")

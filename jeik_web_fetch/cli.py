@@ -30,7 +30,7 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
             save_to_file=True,
             output_dir=None,
             dns=dns,
-            waitFor=4.0
+            waitFor=2.0
         )
         result = await default_engine.scrape_url(options)
         await default_engine.stop()
@@ -58,7 +58,7 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
                 save_to_file=True,
                 output_dir=None,
                 dns=dns,
-                waitFor=4.0
+                waitFor=2.0
             ) for u in urls
         ]
         results = await default_engine.scrape_urls_concurrent(options_list, max_workers=max_workers)
