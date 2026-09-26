@@ -7,12 +7,12 @@ REPO="${JEIK_REPO:-jeikl/Jeik-Web-Fetch}"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_PORT=8863
 
-# Language detection (Default: zh_CN, supports 'en' / 'zh')
-LANG_OPT="${JEIK_LANG:-zh}"
-if [[ "$*" == *"--lang en"* ]] || [[ "$*" == *"-l en"* ]]; then
-    LANG_OPT="en"
-elif [[ "$*" == *"--lang zh"* ]] || [[ "$*" == *"-l zh"* ]]; then
+# Language detection (Default: en, supports 'en' / 'zh')
+LANG_OPT="${JEIK_LANG:-en}"
+if [[ "$*" == *"--lang zh"* ]] || [[ "$*" == *"-l zh"* ]]; then
     LANG_OPT="zh"
+elif [[ "$*" == *"--lang en"* ]] || [[ "$*" == *"-l en"* ]]; then
+    LANG_OPT="en"
 fi
 
 if [ "$LANG_OPT" = "en" ]; then
@@ -112,7 +112,7 @@ if [ "$PLATFORM" = "darwin" ]; then
 fi
 
 if [ "$HAS_BROWSER" = false ]; then
-    echo "[*] 未检测到 Chromium 内核，正在自动安装轻量级 Chromium 引擎..."
+    echo "[*] Chromium browser engine not detected. Installing lightweight Chromium..."
     if command -v apt-get &>/dev/null; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -y || sudo apt-get update -y
@@ -126,7 +126,7 @@ if [ "$HAS_BROWSER" = false ]; then
     elif command -v brew &>/dev/null; then
         brew install --cask google-chrome
     fi
-    echo "[+] 浏览器引擎自动配置完毕！"
+    echo "[+] Browser engine successfully configured!"
 fi
 
 # 5. Automatically deploy Skill into universal ~/.agents/skills directory

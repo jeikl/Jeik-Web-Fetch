@@ -75,8 +75,8 @@ jeik fetch "https://zhuanlan.zhihu.com/p/25964484"
 ```
 *Output begins with an absolute path header, followed by clean, full Markdown:*
 ```markdown
-> 当前摘取的完整文档已存到: /path/to/.jeik/fetches/zhuanlan.zhihu.com_xxx.md
-> 如果后续输出被终端或模型窗口截断，可直接使用读取工具读取上述绝对路径获取完整内容。
+> Complete scraped document persisted at: /path/to/.jeik/fetches/zhuanlan.zhihu.com_xxx.md
+> If this output is truncated by model context windows, read the absolute path above directly.
 
 # Document Title
 ...

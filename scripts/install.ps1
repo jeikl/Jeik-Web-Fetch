@@ -1,7 +1,7 @@
 # Jeik Windows 官方纯二进制一键安装与常驻服务配置脚本 (PowerShell)
 # 支持语言选项: 默认中文 (-Language zh)，可选英文 (-Language en)
 param(
-    [string]$Language = "zh",
+    [string]$Language = "en",
     [string]$Repo = "jeikl/Jeik-Web-Fetch"
 )
 

@@ -42,9 +42,10 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
         saved_md_path = result.saved_files.get("markdown", "")
         content = result.markdown or ""
 
+        # Unambiguous English anchor header (critical for LLM reasoning and tools)
         header = (
-            f"> 当前摘取的完整文档已存到: {saved_md_path}\n"
-            f"> 如果后续输出被终端或模型窗口截断，可直接使用读取工具读取上述绝对路径获取完整内容。\n\n"
+            f"> Complete scraped document persisted at: {saved_md_path}\n"
+            f"> If this output is truncated by model context windows, read the absolute path above directly.\n\n"
         )
         print(header + content)
     else:
