@@ -335,6 +335,28 @@ class ScrapeEngine:
                 options.url
             )
 
+            # 严格错误校验：如果提取出的 Markdown 与纯文本全为空，且 HTML 包含网络阻断错误
+            markdown_content = transformed.get("markdown", "")
+            if not markdown_content.strip():
+                # 检查浏览器是否遇到了网络连接重置或超时错误 (如 GFW 阻断、DNS 不可达)
+                error_match = None
+                if "net::ERR_" in raw_html:
+                    import re
+                    m = re.search(r'net::ERR_[A-Z_]+', raw_html)
+                    if m:
+                        error_match = m.group(0)
+                
+                err_msg = (
+                    f"Navigation failed or connection was reset ({error_match or 'net::ERR_CONNECTION_TIMED_OUT'}). "
+                    f"Target host is unreachable from your network environment."
+                )
+                return ScrapeResult(
+                    success=False,
+                    url=options.url,
+                    error=err_msg,
+                    elapsed_seconds=round(time.time() - t0, 2)
+                )
+
             # 持久化到临时/本地文件（如果指定）
             saved = {}
             if options.save_to_file:
