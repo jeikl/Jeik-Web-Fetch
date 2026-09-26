@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="jeik-web-fetch",
-    version="1.1.0",
+    version="1.1.1",
     description="高性能通用网页抓取与反反爬 Markdown 提取引擎",
     author="JeikCode Team",
     packages=find_packages(),

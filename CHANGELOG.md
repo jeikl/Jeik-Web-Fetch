@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] - 2026-09-27
+
+### Fixed
+- **Windows GBK Encoding & Emoji Safety**: Enforced UTF-8 stream reconfigure (`sys.stdout`, `sys.stderr`, `sys.stdin`) and added `safe_print` fallback to completely eliminate `UnicodeEncodeError` when printing emojis (e.g. `\U0001f468`) and multi-lingual web content under Windows GBK/cp936 pipes.
+- **Network Reset & Unreachable Error Detection**: Surface clear network failure messages instead of empty persisted files on connection resets.
+- **Relative URL Resolution**: Automatically resolve relative URLs to absolute HTTP/HTTPS links using `base_url` during Markdown conversion.
+
+### Added
+- **Configurable Network Timeout & Wait**: Added `-t/--timeout` and `-w/--wait` CLI flags to support slow and high-latency networks seamlessly.
+
+### Performance
+- **Dynamic Content Settle Detection**: Added dynamic DOM substance polling to cut SPA wait time by up to 50%.
+
+### CI/CD
+- **PyInstaller Path Resolution**: Added `--paths .` to PyInstaller packaging in GitHub Actions release workflow.
+
+---
+
 ## [1.1.0] - 2026-09-26
 
 ### Added

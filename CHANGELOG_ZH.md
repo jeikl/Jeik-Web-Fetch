@@ -6,6 +6,24 @@
 
 ---
 
+## [1.1.1] - 2026-09-27
+
+### 修复与加固 (Fixed)
+- **Windows GBK 编码与 Emoji 崩溃根治**：强制标准 I/O（`sys.stdout`、`sys.stderr`、`sys.stdin`）自动以 UTF-8 运行并注入 `SetConsoleOutputCP(65001)`，新增 `safe_print` 兜底保护，彻底杜绝 Windows GBK/cp936 管道下抓取包含 Emoji（如 `\U0001f468` 👨）及特殊多语言字符时触发的 `UnicodeEncodeError` 崩溃。
+- **网络连接重置与不可达精准探测**：针对网络 reset/unreachable 错误返回明确错误原因与提示，杜绝生成空 Markdown 文件。
+- **相对链接自动还原**：基于文档真实 `base_url` 自动将页面中的相对 URL 补全为规范的完整绝对 HTTP/HTTPS 链接。
+
+### 新增特性 (Added)
+- **超时与等待时间自定义参数**：CLI 暴露 `-t/--timeout` 与 `-w/--wait` 命令行参数，无缝支持高延迟弱网环境或重度 SPA 渲染需求。
+
+### 性能优化 (Performance)
+- **SPA 内容就绪动态侦听 (Dynamic Settle)**：引入轻量级 DOM 真实正文就绪探测，页面加载完成后提前进入提取，SPA 等待耗时平均缩减 50%。
+
+### 构建与发布 (CI/CD)
+- **PyInstaller 模块解析路径优化**：在 Release 工作流构建命令中追加 `--paths .`，确保各平台独立二进制打包无隐式依赖丢失。
+
+---
+
 ## [1.1.0] - 2026-09-26
 
 ### 新增 (Added)
