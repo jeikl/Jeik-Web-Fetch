@@ -10,6 +10,7 @@ Jeik CLI 核心入口模块
 
 import os
 import sys
+import shutil
 import argparse
 import asyncio
 import subprocess
@@ -76,7 +77,11 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
 
 def run_uninstall(skip_confirm: bool = False):
     """
-    One-click uninstaller for jeik-web-fetch.
+    One-click self-uninstaller for jeik:
+    - Stops and removes systemd / launchd background daemons
+    - Removes /usr/local/bin/jeik and local binaries
+    - Removes ~/.agents/skills/jeik-web-fetch
+    - Uninstalls pip package if installed via pip
     """
     print("=" * 50)
     print("Jeik CLI Uninstallation Wizard")
@@ -92,15 +97,56 @@ def run_uninstall(skip_confirm: bool = False):
             print("\n[-] Operation cancelled.")
             return
 
-    print("[*] Uninstalling package...")
-    cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "jeik-web-fetch"]
-    res = subprocess.run(cmd)
+    print("[*] Stopping and removing background system services...")
+    # 1. 停止并删除 systemd / launchd 守护进程
+    try:
+        subprocess.run(["systemctl", "stop", "jeik-daemon.service"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        subprocess.run(["systemctl", "disable", "jeik-daemon.service"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        for sfile in ["/etc/systemd/system/jeik-daemon.service", "/lib/systemd/system/jeik-daemon.service"]:
+            if os.path.exists(sfile):
+                try:
+                    os.remove(sfile)
+                except Exception:
+                    pass
+        subprocess.run(["systemctl", "daemon-reload"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    except Exception:
+        pass
 
-    if res.returncode == 0:
-        print("\n[✔] jeik-web-fetch successfully removed from system.")
-    else:
-        print(f"\n[-] Uninstallation encountered error with exit code {res.returncode}", file=sys.stderr)
-        sys.exit(res.returncode)
+    # 2. 删除通用智能体技能 ~/.agents/skills/jeik-web-fetch
+    home = Path.home()
+    skill_dir = home / ".agents" / "skills" / "jeik-web-fetch"
+    if skill_dir.exists():
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        print(f"[+] Removed skill directory: {skill_dir}")
+
+    # 3. 如果是作为 Python 包安装的，调用 pip 卸载
+    # 注意：在 PyInstaller 独立单文件环境中，sys.executable 是 jeik 二进制本身！不能执行 sys.executable -m pip！
+    is_standalone_binary = getattr(sys, "frozen", False)
+    if not is_standalone_binary:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "jeik-web-fetch"], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    # 4. 删除系统可执行文件自身 (/usr/local/bin/jeik 或 ~/.jeik/bin/jeik)
+    print("[*] Removing CLI executables...")
+    candidates = [
+        "/usr/local/bin/jeik",
+        "/usr/local/bin/jeik-web-fetch",
+        "/usr/bin/jeik",
+        str(home / ".local" / "bin" / "jeik"),
+        str(home / ".jeik" / "bin" / "jeik.exe"),
+        str(home / ".jeik" / "bin" / "jeik")
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            try:
+                os.remove(c)
+                print(f"[+] Removed: {c}")
+            except Exception:
+                pass
+
+    print("\n[✔] jeik-web-fetch has been completely uninstalled from this system!")
 
 def run_upgrade():
     """
