@@ -21,7 +21,7 @@ from .core.engine import default_engine
 from .api.routes import app
 import uvicorn
 
-async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
+async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4, timeout: float = 30.0, wait_sec: float = 2.0):
     if len(urls) == 1:
         # 单 URL 场景：最简流式输出
         options = ScrapeOptions(
@@ -30,7 +30,8 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
             save_to_file=True,
             output_dir=None,
             dns=dns,
-            waitFor=2.0
+            timeout=timeout,
+            waitFor=wait_sec
         )
         result = await default_engine.scrape_url(options)
         await default_engine.stop()
@@ -58,7 +59,8 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4):
                 save_to_file=True,
                 output_dir=None,
                 dns=dns,
-                waitFor=2.0
+                timeout=timeout,
+                waitFor=wait_sec
             ) for u in urls
         ]
         results = await default_engine.scrape_urls_concurrent(options_list, max_workers=max_workers)
@@ -173,7 +175,7 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
-    # 1. jeik fetch <url> [<url> ...] [-j / --threads <N>] [--dns <dns>]
+    # 1. jeik fetch <url> [<url> ...] [-j / --threads <N>] [--dns <dns>] [-t / --timeout <sec>] [-w / --wait <sec>]
     fetch_parser = subparsers.add_parser("fetch", help="Scrape any URL (intranet/internet/SPA/anti-bot) into structured Markdown")
     fetch_parser.add_argument("urls", nargs="+", help="Target URL(s) to scrape (supports parallel multi-URL scraping)")
     fetch_parser.add_argument(
@@ -187,6 +189,20 @@ def main():
         "--dns",
         default=None,
         help="Custom DNS resolver (numeric IP e.g. 8.8.8.8, or DoH encrypted e.g. https://1.1.1.1/dns-query, default: system)"
+    )
+    fetch_parser.add_argument(
+        "-t", "--timeout",
+        dest="timeout",
+        type=float,
+        default=30.0,
+        help="Overall network timeout in seconds (default: 30.0s, increase for high-latency or slow overseas pages)"
+    )
+    fetch_parser.add_argument(
+        "-w", "--wait",
+        dest="wait",
+        type=float,
+        default=2.0,
+        help="SPA render buffering wait in seconds (default: 2.0s, increase for slow API rendering)"
     )
 
     # 2. jeik serve [--port 8863]
@@ -208,7 +224,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "fetch":
-        asyncio.run(run_fetch(args.urls, dns=args.dns, max_workers=args.max_workers))
+        asyncio.run(run_fetch(args.urls, dns=args.dns, max_workers=args.max_workers, timeout=args.timeout, wait_sec=args.wait))
     elif args.command == "serve":
         uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
     elif args.command == "upgrade":
