@@ -15,18 +15,18 @@
 - **⚡ Zero Heavy Dependencies**: Operates on native Chromium/Chrome/Edge already installed on the host. No bulky Playwright/Node.js runtimes or Docker containers required.
 - **🛡️ Enterprise Stealth Evasion**:
   - `navigator.webdriver` prototype removal
-  - 1080P physical viewport & media query spoofing (bypasses anti-bot 403 walls on Zhihu, Cloudflare, etc.)
+  - 1080P physical viewport & media query spoofing (bypasses anti-bot 403 blocks on Cloudflare Turnstile, DataDome, and complex client challenges)
   - Complete `window.chrome.runtime`, plugins, and permissions emulation
 - **🧩 Monaco / Code Editor In-Memory Penetration**:
   - Directly extracts models via `window.monaco.editor.getModels().getValue()`
-  - Eliminates virtual scroll code truncation in modern API documentation (e.g., DingTalk OpenAPI)
+  - Eliminates virtual scroll code truncation in modern developer documentation (e.g., Stripe, Supabase, Cloudflare Docs)
 - **🔍 Agentic Deep Exploration**:
-  - Automated stepped smooth-scrolling to trigger `IntersectionObserver` and asynchronous API pricing callbacks (e.g., Aliyun `queryPrice`).
+  - Automated stepped smooth-scrolling to trigger `IntersectionObserver` and asynchronous API pricing callbacks.
   - Automated drawer/modal scanner to extract hidden terms, FAQ details, and activity rules into a dedicated appendix.
   - Automated tab traversal across unselected options (`[role="tab"]`).
 - **🧠 Heuristic Content Quality Classifier**: Evaluates text density, tag ratios, and SPA skeleton markers. Fast SSR targets (GitHub, Wikipedia) return cleanly in under 1 second without launching a browser.
 - **🚀 Hybrid Concurrency**: Blends asynchronous CDP I/O with a dedicated `ThreadPoolExecutor` for CPU-heavy HTML parsing and Markdown conversion. Supports parallel multi-URL scraping.
-- **🌐 Encrypted & Custom DNS**: Resolves numeric IPs (`8.8.8.8`) and DNS-over-HTTPS (`--dns https://1.1.1.1/dns-query` / `--dns aliyun`), with complete intranet and public access.
+- **🌐 Encrypted & Custom DNS**: Resolves numeric IPs (`8.8.8.8`, `1.1.1.1`) and DNS-over-HTTPS (`--dns https://1.1.1.1/dns-query` / `--dns google`), with complete intranet and public access.
 
 ---
 
@@ -71,30 +71,30 @@ irm https://raw.githubusercontent.com/jeikl/Jeik-Web-Fetch/main/scripts/install.
 
 #### Single URL Scraping:
 ```bash
-jeik fetch "https://zhuanlan.zhihu.com/p/25964484"
+jeik fetch "https://docs.stripe.com/api"
 ```
 *Output begins with an absolute path header, followed by clean, full Markdown:*
 ```markdown
-> Complete scraped document persisted at: /path/to/.jeik/fetches/zhuanlan.zhihu.com_xxx.md
+> Complete scraped document persisted at: /path/to/.jeik/fetches/docs.stripe.com_api_xxx.md
 > If this output is truncated by model context windows, read the absolute path above directly.
 
-# Document Title
+# Stripe API Reference
 ...
 ```
 
 #### Multi-URL Concurrent Scraping:
 ```bash
-jeik fetch "https://url1" "https://url2" "https://url3" -j 4
+jeik fetch "https://github.com/torvalds/linux" "https://news.ycombinator.com" -j 2
 ```
 
 #### Using Encrypted DNS (DoH):
 ```bash
-jeik fetch "https://open.dingtalk.com/..." --dns https://1.1.1.1/dns-query
+jeik fetch "https://en.wikipedia.org/wiki/Rust_(programming_language)" --dns https://1.1.1.1/dns-query
 ```
 
 #### Start High-Concurrency FastAPI Server:
 ```bash
-jeik serve --port 8000
+jeik serve --port 8863
 ```
 
 #### Self-Uninstall:
@@ -112,7 +112,7 @@ from jeik_web_fetch import default_engine, ScrapeOptions, OutputFormat
 
 async def main():
     options = ScrapeOptions(
-        url="https://open.dingtalk.com/document/development/overview-of-event-subscription",
+        url="https://docs.stripe.com/api",
         formats=[OutputFormat.MARKDOWN, OutputFormat.LINKS],
         save_to_file=True
     )
