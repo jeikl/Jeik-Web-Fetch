@@ -10,11 +10,63 @@ Jeik CLI 核心入口模块
 
 import os
 import sys
+import io
 import shutil
 import argparse
 import asyncio
 import subprocess
 from pathlib import Path
+
+def configure_utf8_io():
+    """
+    Force standard I/O streams (stdin, stdout, stderr) to UTF-8 encoding on all platforms.
+    Prevents UnicodeEncodeError on Windows (e.g. GBK/cp936) when printing
+    emojis (\U0001f468, etc.) or multi-lingual web content.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception:
+            pass
+
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None:
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, io.UnsupportedOperation):
+                try:
+                    if hasattr(stream, "buffer"):
+                        setattr(sys, stream_name, io.TextIOWrapper(stream.buffer, encoding="utf-8", errors="replace", line_buffering=True))
+                except Exception:
+                    pass
+
+    if hasattr(sys.stdin, "reconfigure"):
+        try:
+            sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+# Immediately reconfigure I/O streams on module import
+configure_utf8_io()
+
+def safe_print(*args, **kwargs):
+    """
+    Print wrapper with fallback to replace unencodable characters
+    if stdout/stderr cannot encode them (e.g. stubborn legacy pipes).
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        file = kwargs.get("file") or sys.stdout
+        enc = getattr(file, "encoding", None) or "utf-8"
+        sep = kwargs.get("sep", " ")
+        text = sep.join(str(a) for a in args)
+        sanitized = text.encode(enc, errors="replace").decode(enc, errors="replace")
+        kwargs_copy = dict(kwargs)
+        print(sanitized, **kwargs_copy)
 
 from .core.models import ScrapeOptions, OutputFormat
 from .core.engine import default_engine
@@ -37,7 +89,7 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4, time
         await default_engine.stop()
 
         if not result.success:
-            print(f"[-] 抓取失败: {result.error}", file=sys.stderr)
+            safe_print(f"[-] 抓取失败: {result.error}", file=sys.stderr)
             sys.exit(1)
 
         saved_md_path = result.saved_files.get("markdown", "")
@@ -48,10 +100,10 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4, time
             f"> Complete scraped document persisted at: {saved_md_path}\n"
             f"> If this output is truncated by model context windows, read the absolute path above directly.\n\n"
         )
-        print(header + content)
+        safe_print(header + content)
     else:
         # 多 URL 场景：全异步多线程并发抓取
-        print(f"[*] Starting concurrent scraping for {len(urls)} URLs (concurrency workers: {max_workers})...\n")
+        safe_print(f"[*] Starting concurrent scraping for {len(urls)} URLs (concurrency workers: {max_workers})...\n")
         options_list = [
             ScrapeOptions(
                 url=u,
@@ -66,17 +118,17 @@ async def run_fetch(urls: list[str], dns: str = None, max_workers: int = 4, time
         results = await default_engine.scrape_urls_concurrent(options_list, max_workers=max_workers)
         await default_engine.stop()
 
-        print("=" * 60)
-        print("Concurrent Scraping Task Summary:")
-        print("=" * 60)
+        safe_print("=" * 60)
+        safe_print("Concurrent Scraping Task Summary:")
+        safe_print("=" * 60)
         for i, res in enumerate(results, 1):
             if res.success:
                 saved = res.saved_files.get("markdown", "")
-                print(f"[{i}/{len(urls)}] ✔ Succeeded: {res.url} ({res.elapsed_seconds}s)")
-                print(f"      Saved: {saved}")
+                safe_print(f"[{i}/{len(urls)}] ✔ Succeeded: {res.url} ({res.elapsed_seconds}s)")
+                safe_print(f"      Saved: {saved}")
             else:
-                print(f"[{i}/{len(urls)}] ✘ Failed: {res.url} -> {res.error}")
-        print("\n> All documents have been persisted to the absolute paths above.")
+                safe_print(f"[{i}/{len(urls)}] ✘ Failed: {res.url} -> {res.error}")
+        safe_print("\n> All documents have been persisted to the absolute paths above.")
 
 def run_uninstall(skip_confirm: bool = False):
     """
@@ -165,6 +217,9 @@ def run_upgrade():
         sys.exit(1)
 
 def main():
+    # 强制确保所有标准 I/O 为 UTF-8 编码
+    configure_utf8_io()
+
     # 启动后台自动更新探测器 (每10分钟自动检查一次，若有更新且当前空闲则无感平滑升级)
     from .core.updater import updater
     updater.start_background_daemon()

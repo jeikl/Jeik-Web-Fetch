@@ -1,6 +1,34 @@
 #!/usr/bin/env python3
 import sys
 import os
+import io
+
+# 强制将标准输入/输出/错误流重置为 UTF-8，彻底杜绝 Windows (GBK/cp936) 下 emoji 或多语言网页导致 UnicodeEncodeError
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream is not None:
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, io.UnsupportedOperation):
+            try:
+                if hasattr(_stream, "buffer"):
+                    setattr(sys, _stream_name, io.TextIOWrapper(_stream.buffer, encoding="utf-8", errors="replace", line_buffering=True))
+            except Exception:
+                pass
+
+if hasattr(sys.stdin, "reconfigure"):
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # 确保脚本即使未通过 pip install 安装也能直接运行
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -10,3 +38,4 @@ from bin.jeik import main
 
 if __name__ == "__main__":
     main()
+
