@@ -96,7 +96,38 @@ else
     sudo mv -f "$TMP_FILE" "${INSTALL_DIR}/jeik"
 fi
 
-# 4. Automatically deploy Skill into universal ~/.agents/skills directory
+# 4. 自动检测并静默安装 Chromium 浏览器渲染引擎 (彻底免去用户手动安装烦恼)
+HAS_BROWSER=false
+for b in google-chrome google-chrome-stable chromium chromium-browser msedge brave-browser; do
+    if command -v "$b" &>/dev/null; then
+        HAS_BROWSER=true
+        break
+    fi
+done
+
+if [ "$PLATFORM" = "darwin" ]; then
+    if [ -d "/Applications/Google Chrome.app" ] || [ -d "/Applications/Microsoft Edge.app" ]; then
+        HAS_BROWSER=true
+    fi
+fi
+
+if [ "$HAS_BROWSER" = false ]; then
+    echo "[*] 未检测到 Chromium 内核，正在自动安装轻量级 Chromium 引擎..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq chromium-browser 2>/dev/null || sudo apt-get install -y -qq chromium 2>/dev/null || true
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y chromium 2>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        sudo yum install -y epel-release 2>/dev/null && sudo yum install -y chromium 2>/dev/null || true
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm chromium 2>/dev/null || true
+    elif command -v brew &>/dev/null; then
+        brew install --cask google-chrome 2>/dev/null || true
+    fi
+    echo "[+] 浏览器引擎自动配置完毕！"
+fi
+
+# 5. Automatically deploy Skill into universal ~/.agents/skills directory
 echo -e "$MSG_DEPLOY_SKILL"
 AGENT_SKILL_DIR="${HOME}/.agents/skills/jeik-web-fetch"
 mkdir -p "$AGENT_SKILL_DIR"
@@ -124,7 +155,7 @@ jeik fetch "<URL>" --dns "https://1.1.1.1/dns-query" -j 4
 > Output begins with an absolute path anchor header where the full Markdown has been persisted safely to `.jeik/fetches/`.
 EOF
 
-# 5. Provision persistent background daemon service
+# 6. Provision persistent background daemon service
 if [ "$PLATFORM" = "linux" ] && command -v systemctl &>/dev/null; then
     echo -e "$MSG_SYSTEMD"
     SERVICE_FILE="/etc/systemd/system/jeik-daemon.service"
