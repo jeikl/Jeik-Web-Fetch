@@ -3,6 +3,8 @@ from typing import List, Dict, Tuple, Any, Optional
 from bs4 import BeautifulSoup
 from ..core.models import OutputFormat
 
+from urllib.parse import urljoin
+
 class ContentTransformer:
     """
     负责将浏览器渲染后的 HTML 按需拆解转换为多样化目标格式：
@@ -29,13 +31,14 @@ class ContentTransformer:
         return meta
 
     @staticmethod
-    def extract_links(soup: BeautifulSoup) -> List[Dict[str, str]]:
+    def extract_links(soup: BeautifulSoup, base_url: Optional[str] = None) -> List[Dict[str, str]]:
         links = []
         for a in soup.find_all("a"):
             href = a.get("href", "").strip()
             text = a.get_text().strip()
             if href:
-                links.append({"text": text, "href": href})
+                full_href = urljoin(base_url, href) if base_url else href
+                links.append({"text": text, "href": full_href})
         return links
 
     @classmethod
@@ -44,7 +47,8 @@ class ContentTransformer:
         raw_html: str,
         formats: List[OutputFormat],
         only_main_content: bool = True,
-        drawers_text: Optional[str] = None
+        drawers_text: Optional[str] = None,
+        base_url: Optional[str] = None
     ) -> Dict[str, Any]:
         result = {}
 
@@ -56,7 +60,7 @@ class ContentTransformer:
         result["metadata"] = meta
 
         if OutputFormat.LINKS in formats:
-            result["links"] = cls.extract_links(soup)
+            result["links"] = cls.extract_links(soup, base_url=base_url)
 
         # 过滤噪音标签
         for tag in soup(["script", "style", "head", "noscript", "svg", "iframe"]):
@@ -139,7 +143,9 @@ class ContentTransformer:
                 href = a.get("href", "").strip()
                 text = a.get_text().strip()
                 if href and text:
-                    a.replace_with(f"[{text}]({href})")
+                    # 将相对链接自动转换为完整的绝对 HTTP/HTTPS 链接
+                    full_href = urljoin(base_url, href) if base_url else href
+                    a.replace_with(f"[{text}]({full_href})")
 
             md_text = work_soup.get_text()
             md_text = re.sub(r"[ \t]+", " ", md_text)

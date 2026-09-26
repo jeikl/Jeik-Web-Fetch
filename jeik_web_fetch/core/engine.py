@@ -121,7 +121,8 @@ class ScrapeEngine:
                     raw_html,
                     options.formats,
                     options.only_main_content,
-                    None
+                    None,
+                    options.url
                 )
 
                 md = transformed.get("markdown", "")
@@ -330,7 +331,8 @@ class ScrapeEngine:
                 raw_html,
                 options.formats,
                 options.only_main_content,
-                drawers_text
+                drawers_text,
+                options.url
             )
 
             # 持久化到临时/本地文件（如果指定）
