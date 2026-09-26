@@ -114,15 +114,17 @@ fi
 if [ "$HAS_BROWSER" = false ]; then
     echo "[*] 未检测到 Chromium 内核，正在自动安装轻量级 Chromium 引擎..."
     if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq chromium-browser 2>/dev/null || sudo apt-get install -y -qq chromium 2>/dev/null || true
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y || sudo apt-get update -y
+        apt-get install -y chromium-browser || apt-get install -y chromium || sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y chromium 2>/dev/null || true
+        dnf install -y chromium || sudo dnf install -y chromium
     elif command -v yum &>/dev/null; then
-        sudo yum install -y epel-release 2>/dev/null && sudo yum install -y chromium 2>/dev/null || true
+        yum install -y epel-release && yum install -y chromium || sudo yum install -y chromium
     elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm chromium 2>/dev/null || true
+        pacman -S --noconfirm chromium || sudo pacman -S --noconfirm chromium
     elif command -v brew &>/dev/null; then
-        brew install --cask google-chrome 2>/dev/null || true
+        brew install --cask google-chrome
     fi
     echo "[+] 浏览器引擎自动配置完毕！"
 fi
