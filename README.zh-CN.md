@@ -27,28 +27,7 @@
 - **🧠 本质内容质量分类器 (`ContentQualityClassifier`)**：完全抛弃生硬脆弱的域名黑白名单，基于文本密度、标签比例与 SPA 挂载点骨架特征进行本质判别。普通静态页面（如 GitHub、维基百科）1 秒内秒级直出，完全免开浏览器。
 - **🚀 混合并发架构**：融合异步 CDP I/O 与专用的 `ThreadPoolExecutor` 线程池，处理繁重的 HTML 解析与 Markdown 正则转换，主事件循环毫秒不卡，支持多 URL 并行并发抓取。
 - **🌐 加密 DNS (DoH) 与自定义 DNS**：支持指定数字 IP（`8.8.8.8`，`1.1.1.1`）与标准 DoH 加密 DNS（`--dns https://1.1.1.1/dns-query` 或 `--dns google`），彻底放行所有内网与公网请求。
-
----
-
-## 🏗️ 架构分层设计 (Clean Architecture)
-
-```text
-jeik_web_fetch/
-├── core/                   # 核心领域与引擎层 (Domain & Engine)
-│   ├── models.py           # 强类型数据契约 (ScrapeOptions, ScrapeResult, OutputFormat)
-│   ├── engine.py           # 常驻浏览器连接池与 CDP 会话驱动引擎 (ScrapeEngine)
-│   ├── classifier.py       # 本质内容质量与 SPA 骨架特征分类器
-│   └── dns.py              # 自定义与 DoH 加密 DNS 解析配置
-├── transformers/           # 转换器分治层 (Content Processing)
-│   └── content.py          # 多格式流水线 (Markdown/HTML/Text/Links/Metadata)
-├── storage/                # 存储管理层 (Artifacts & Persistence)
-│   └── manager.py          # 绝对路径生成器与文件安全落盘管理
-├── api/                    # 外部服务接口层 (Transport)
-│   └── routes.py           # 高并发异步 FastAPI 路由 (/scrape, /scrape/batch, /health)
-├── cli.py                  # 统一 CLI 命令行交互逻辑
-└── browser.py              # 跨平台宿主适配层 (Windows/macOS/Linux/ARM64 浏览器自动探测)
-```
-
+- 
 ---
 
 ## ⚡ 快速开始
