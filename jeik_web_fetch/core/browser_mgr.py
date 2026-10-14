@@ -161,7 +161,8 @@ class BrowserManager:
         cmd = [
             bin_path,
             f"--remote-debugging-port={port}",
-            f"--user-data-dir={str(profile_dir)}",
+            "--remote-debugging-address=127.0.0.1",
+            f"--user-data-dir={str(profile_dir.resolve())}",
             "--no-first-run",
             "--no-default-browser-check"
         ]
@@ -169,7 +170,10 @@ class BrowserManager:
             cmd.append(target_url)
 
         try:
-            subprocess.Popen(cmd)
+            flags = 0
+            if sys.platform == "win32":
+                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen(cmd, creationflags=flags)
             # 等待片刻直至 CDP 端口就绪
             t0 = time.time()
             while time.time() - t0 < 4.0:

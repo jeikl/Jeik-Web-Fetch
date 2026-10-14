@@ -321,6 +321,7 @@ def run_browser_command(sub_args):
         cmd = [
             bin_path,
             f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1",
             f"--user-data-dir={profile_dir}",
             "--no-first-run",
             "--no-default-browser-check"
