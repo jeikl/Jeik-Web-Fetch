@@ -5,6 +5,7 @@ Jeik-Web-Fetch: 工业级高性能通用网页抓取、多格式转换与工件�
 
 from .core.models import OutputFormat, ScrapeOptions, ScrapeResult
 from .core.engine import ScrapeEngine, default_engine
+from .core.cookies import CookieHelper, CookieStore, default_cookie_store
 from .browser import find_system_browser
 from .transformers.content import ContentTransformer
 from .storage.manager import StorageManager, default_storage
@@ -18,6 +19,9 @@ __all__ = [
     "ScrapeResult",
     "ScrapeEngine",
     "default_engine",
+    "CookieHelper",
+    "CookieStore",
+    "default_cookie_store",
     "find_system_browser",
     "ContentTransformer",
     "StorageManager",

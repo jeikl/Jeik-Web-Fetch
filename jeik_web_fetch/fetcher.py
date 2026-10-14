@@ -8,7 +8,7 @@ import tempfile
 import shutil
 import subprocess
 import urllib.request
-from typing import Optional
+from typing import Optional, Any
 
 from .browser import find_system_browser
 from .converter import html_to_markdown
@@ -31,16 +31,53 @@ def jeik_fetch(
     url: str,
     timeout: float = 20.0,
     wait_render_sec: float = 4.0,
-    browser_path: Optional[str] = None
+    browser_path: Optional[str] = None,
+    cookies: Optional[Any] = None,
+    headers: Optional[dict] = None,
+    cdp_endpoint: Optional[str] = None,
+    browser_port: Optional[int] = None,
+    attach_tab: bool = False
 ) -> str:
     """
     Jeik-Web-Fetch 原生高性能抓取核心：
     - 无需安装 Playwright / Docker / Node.js
     - 启动系统级 Chrome/Edge，注入多维反爬探针绕过（Webdriver、Plugins、Permissions、Window-size）
     - 采用主动 CDP 会话控制，彻底避免被长轮询或埋点挂起
+    - 支持携带 Cookies 登录态，或直接绑定正在运行的浏览器实例 (browser_port / cdp_endpoint)
     - 穿透前端 Monaco / CodeMirror 内存模型，杜绝懒加载代码截断
     - 高保真提取并转为 Markdown
     """
+    if cookies or headers or cdp_endpoint or browser_port or attach_tab:
+        import asyncio
+        from .core.models import ScrapeOptions, OutputFormat
+        from .core.engine import default_engine
+        options = ScrapeOptions(
+            url=url,
+            formats=[OutputFormat.MARKDOWN],
+            timeout=timeout,
+            waitFor=wait_render_sec,
+            cookies=cookies,
+            headers=headers,
+            cdp_endpoint=cdp_endpoint,
+            browser_port=browser_port,
+            attach_tab=attach_tab
+        )
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 如果当前处于已有异步循环中（如 Jupyter/FastAPI），在新线程事件循环中运行
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    res = pool.submit(lambda: asyncio.run(default_engine.scrape_url(options))).result()
+            else:
+                res = loop.run_until_complete(default_engine.scrape_url(options))
+        except Exception:
+            res = asyncio.run(default_engine.scrape_url(options))
+
+        if not res.success:
+            raise RuntimeError(res.error or "抓取失败")
+        return res.markdown or ""
+
     bin_path = browser_path or find_system_browser()
     if not bin_path:
         raise RuntimeError(

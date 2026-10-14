@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
 class OutputFormat(str, Enum):
@@ -21,6 +21,34 @@ class ScrapeOptions(BaseModel):
     dns: Optional[str] = Field(default=None, description="自定义 DNS (支持数字 IP 如 8.8.8.8，或 DoH 加密 DNS 如 https://1.1.1.1/dns-query，默认系统 DNS)")
     deep_explore: bool = Field(default=True, description="开启深度交互探索 (自动平滑滚动触发异步价格接口、自动遍历所有Tab、自动点击提取弹窗抽屉细则)")
     max_workers: int = Field(default=4, description="多线程并发工作池容量")
+    cookies: Optional[Union[str, Dict[str, str], List[Dict[str, Any]]]] = Field(
+        default=None,
+        description="网页登录态 Cookies，支持 'k1=v1; k2=v2' 字符串、字典或列表"
+    )
+    cookie_file: Optional[str] = Field(
+        default=None,
+        description="包含 Cookies 的本地文件路径 (支持 Netscape 格式 cookies.txt 或 JSON 文件)"
+    )
+    headers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="自定义 HTTP 请求头 (如 Authorization, User-Agent 等)"
+    )
+    cdp_endpoint: Optional[str] = Field(
+        default=None,
+        description="连接到现有正在运行的 Chromium 浏览器 CDP 端点 (例如 http://127.0.0.1:9222)"
+    )
+    browser_port: Optional[int] = Field(
+        default=None,
+        description="连接到本地正在运行的浏览器调试端口 (例如 9222)，等同于 cdp_endpoint=http://127.0.0.1:<port>"
+    )
+    attach_tab: bool = Field(
+        default=False,
+        description="若为 True，则直接附加到外部浏览器中已打开的活跃标签页进行提取，不新建也不关闭标签页"
+    )
+    tab: Optional[str] = Field(
+        default=None,
+        description="按标签页标题关键词、网址或序号模糊匹配运行中浏览器打开的页面 (例如: '知乎', '1', '双11')"
+    )
 
 class ScrapeResult(BaseModel):
     success: bool

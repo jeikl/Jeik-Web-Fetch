@@ -16,6 +16,8 @@ import websockets
 from .models import ScrapeOptions, ScrapeResult, OutputFormat
 from .dns import DNSResolverConfig
 from .classifier import ContentQualityClassifier
+from .cookies import CookieHelper, default_cookie_store
+from .browser_mgr import browser_mgr
 from .updater import updater
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
@@ -88,10 +90,77 @@ class ScrapeEngine:
                 shutil.rmtree(self.tmp_dir, ignore_errors=True)
                 self.tmp_dir = None
 
-    async def _try_fast_fetch(self, options: ScrapeOptions) -> Optional[ScrapeResult]:
+    def _resolve_cdp_endpoint(self, options: ScrapeOptions) -> Optional[str]:
+        """
+        解析外部 CDP 浏览器端点：
+        - 优先级 1: options.cdp_endpoint (形如 http://127.0.0.1:9222 或 127.0.0.1:9222)
+        - 优先级 2: options.browser_port (形如 9222)
+        - 优先级 3: 环境变量 JEIK_CDP_ENDPOINT / JEIK_BROWSER_PORT
+        - 优先级 4: 当用户指定了 options.attach_tab 或 options.tab，或未指定端口时，全自动智能探测本地运行中的浏览器！
+        若未提供且未探测到，则返回 None (表示使用内置的无头 Chromium 常驻池)
+        """
+        endpoint = options.cdp_endpoint or os.environ.get("JEIK_CDP_ENDPOINT")
+        if not endpoint:
+            port = options.browser_port or os.environ.get("JEIK_BROWSER_PORT")
+            if port:
+                endpoint = f"http://127.0.0.1:{port}"
+
+        # 若用户启用了 attach_tab 或指定了 tab，尝试全自动探测本地运行中的浏览器实例
+        if not endpoint and (options.attach_tab or options.tab):
+            discovered = browser_mgr.auto_discover_cdp_endpoint()
+            if discovered:
+                endpoint = discovered
+
+        if endpoint:
+            endpoint = str(endpoint).strip()
+            if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+                endpoint = f"http://{endpoint}"
+            return endpoint.rstrip("/")
+        return None
+
+    def _resolve_cookies_and_headers(
+        self, options: ScrapeOptions
+    ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """
+        解析并合并显式 Cookie、文件 Cookie、持久化 Cookie 与自定义 Header
+        返回: (normalized_cookies, extra_headers)
+        """
+        raw_cookies_list = []
+
+        # 1. 从 cookie_file 读取
+        if options.cookie_file:
+            try:
+                raw_cookies_list.extend(CookieHelper.load_from_file(options.cookie_file))
+            except Exception:
+                pass
+
+        # 2. 从 options.cookies 解析
+        if options.cookies:
+            raw_cookies_list.extend(CookieHelper.normalize_cookies(options.cookies, target_url=options.url))
+
+        # 3. 若未显式传入任何 Cookie，自动检索对应域名的全局持久化登录态
+        if not raw_cookies_list:
+            saved_cookies = default_cookie_store.get_for_url_or_domain(options.url)
+            if saved_cookies:
+                raw_cookies_list.extend(saved_cookies)
+
+        normalized_cookies = CookieHelper.normalize_cookies(raw_cookies_list, target_url=options.url)
+
+        # 4. 解析并合并 headers
+        headers = dict(options.headers or {})
+        if normalized_cookies:
+            cookie_header_val = CookieHelper.to_cookie_header(normalized_cookies)
+            if cookie_header_val and "cookie" not in [k.lower() for k in headers]:
+                headers["Cookie"] = cookie_header_val
+
+        return normalized_cookies, headers
+
+    async def _try_fast_fetch(
+        self, options: ScrapeOptions, extra_headers: Optional[Dict[str, str]] = None
+    ) -> Optional[ScrapeResult]:
         """
         本质性内容质量裁决器（零域名白名单）：
-        - 对任何未知 URL 先以毫秒级 HTTP 探针试探；
+        - 对任何未知 URL 先以毫秒级 HTTP 探针试探（包含登录态 Cookie 与 Headers）；
         - 根据“文本密度、语义结构、反爬/SPA 骨架特征”由 ContentQualityClassifier 进行本质裁决；
         - 只有真实内容充沛且非骨架屏的页面才会直接输出，绝无误判；
         - 一旦属于 SPA 空壳或风控拦截，毫秒级无感降级至无头浏览器！
@@ -103,6 +172,9 @@ class ScrapeEngine:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             }
+            if extra_headers:
+                headers.update(extra_headers)
+
             async with httpx.AsyncClient(follow_redirects=True, timeout=6.0, verify=False) as client:
                 res = await client.get(options.url, headers=headers)
                 
@@ -158,24 +230,113 @@ class ScrapeEngine:
     async def scrape_url(self, options: ScrapeOptions) -> ScrapeResult:
         updater.enter_task()
         target_id = None
+        cdp_base = None
+        should_close_tab = False
         t0 = time.time()
         try:
-            # Tier 1: 极速智能路由（GitHub / SSR 站点 0.5s~1s 秒出）
-            fast_res = await self._try_fast_fetch(options)
-            if fast_res:
-                return fast_res
+            # 解析外部现有浏览器端点（若指定，则直接接入该运行中的浏览器实例）
+            external_cdp = self._resolve_cdp_endpoint(options)
+            cdp_base = external_cdp or f"http://127.0.0.1:{self.port}"
 
-            # Tier 2: 降级自愈升级至无头浏览器深度探索流
-            await self.ensure_started(dns=options.dns)
+            # 解析并收集 Cookies 与自定义 Headers (含自动全局持久化登录态匹配)
+            cookies, extra_headers = self._resolve_cookies_and_headers(options)
+
+            # 若指定了接管标签页但未找到任何运行中的浏览器实例，给出针对非技术用户的极简指引
+            if (options.attach_tab or options.tab) and not external_cdp:
+                return ScrapeResult(
+                    success=False,
+                    url=options.url,
+                    error=(
+                        "未检测到正在运行且已开启调试通道的浏览器。\n\n"
+                        "💡 针对非技术人员的 1 秒极简解决方案:\n"
+                        "  1. 在终端运行: `jeik open <网址>` (系统会自动弹出已配置好的 Chrome/Edge 浏览器窗口)；\n"
+                        "  2. 在弹出的浏览器中正常查看网页或扫码登录；\n"
+                        "  3. 再次运行: `jeik fetch --active-tab` 或 `jeik fetch --tab \"关键词\"` 即可瞬间自动提取！"
+                    ),
+                    elapsed_seconds=round(time.time() - t0, 2)
+                )
+
+            # 若未指定外部浏览器且未开启 attach_tab/tab，优先尝试 Tier 1 极速探针
+            if not external_cdp and not options.attach_tab and not options.tab:
+                fast_res = await self._try_fast_fetch(options, extra_headers=extra_headers)
+                if fast_res:
+                    return fast_res
+
+            # Tier 2: 降级自愈升级至无头浏览器 / 连接现有运行中的浏览器实例
+            if not external_cdp:
+                await self.ensure_started(dns=options.dns)
 
             async with httpx.AsyncClient() as client:
-                new_tab = await client.put(f"http://127.0.0.1:{self.port}/json/new?{options.url}", timeout=10)
-                tab_info = new_tab.json()
-                target_id = tab_info["id"]
-                ws_url = tab_info["webSocketDebuggerUrl"]
+                # 连通性校验
+                try:
+                    ver_res = await client.get(f"{cdp_base}/json/version", timeout=3.0)
+                    if ver_res.status_code != 200:
+                        raise ConnectionError(f"HTTP {ver_res.status_code}")
+                except Exception as conn_err:
+                    err_msg = (
+                        f"无法连接到正在运行的浏览器实例 ({cdp_base}): {conn_err}。\n"
+                        f"提示: 请运行 `jeik open` 一键启动已配置好调试通道的浏览器。"
+                    )
+                    return ScrapeResult(
+                        success=False,
+                        url=options.url,
+                        error=err_msg,
+                        elapsed_seconds=round(time.time() - t0, 2)
+                    )
+
+                if (options.attach_tab or options.tab) and external_cdp:
+                    # 接管外部浏览器当前活跃或指定的标签页 (不新建也不关闭 Tab)
+                    tabs = browser_mgr.get_open_tabs(cdp_base, timeout=3.0)
+                    if not tabs:
+                        return ScrapeResult(
+                            success=False,
+                            url=options.url,
+                            error="在正在运行的浏览器实例中未找到任何打开的网页标签页 (Page Tab)。",
+                            elapsed_seconds=round(time.time() - t0, 2)
+                        )
+                    matched = None
+                    if options.tab:
+                        matched = browser_mgr.match_tab_by_query(tabs, options.tab)
+                        if not matched:
+                            tabs_summary = "\n".join([f"  [{t['index']}] {t['title']} ({t['url']})" for t in tabs[:10]])
+                            return ScrapeResult(
+                                success=False,
+                                url=options.url,
+                                error=(
+                                    f"未在运行的浏览器中找到匹配 '{options.tab}' 的标签页。\n"
+                                    f"当前打开的标签页列表:\n{tabs_summary}\n\n"
+                                    f"提示: 您可以直接使用标签序号或标题关键词，例如: `jeik fetch --tab 1` 或 `jeik fetch --tab \"{tabs[0]['title'][:6]}\"`"
+                                ),
+                                elapsed_seconds=round(time.time() - t0, 2)
+                            )
+                    else:
+                        # 优先匹配当前正在访问 options.url 的标签页，否则直接接管最顶层活跃标签页
+                        matched = next((t for t in tabs if options.url and options.url in t.get("url", "")), tabs[0])
+
+                    target_id = matched["id"]
+                    ws_url = matched["webSocketDebuggerUrl"]
+                    should_close_tab = False
+                    # 动态反向同步实际标签页 URL
+                    if matched.get("url") and (not options.url or options.url == "about:blank"):
+                        options.url = matched["url"]
+                else:
+                    # 在浏览器中预先创建干净空白页，以便在页面导航前完整注入反爬脚本与登录态 Cookie
+                    new_tab = await client.put(f"{cdp_base}/json/new?about:blank", timeout=10)
+                    tab_info = new_tab.json()
+                    target_id = tab_info["id"]
+                    ws_url = tab_info["webSocketDebuggerUrl"]
+                    should_close_tab = True
 
             async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
-                # 注入反爬特征
+                # 1. 开启 Network 与 Page 域
+                await ws.send(json.dumps({"id": 101, "method": "Network.enable"}))
+                await ws.send(json.dumps({"id": 102, "method": "Page.enable"}))
+
+                # 若是新建的独立临时 Tab，清理上一轮可能残留的临时 Cookie，确保请求与请求之间的会话天然隔离
+                if should_close_tab:
+                    await ws.send(json.dumps({"id": 100, "method": "Network.clearBrowserCookies"}))
+
+                # 2. 注入反爬特征 (页面导航前注册生命周期脚本 + 当前运行时求值)
                 stealth_js = """
                 (() => {
                     try {
@@ -195,9 +356,35 @@ class ScrapeEngine:
                     } catch (e) {}
                 })()
                 """
-                await ws.send(json.dumps({"id": 999, "method": "Runtime.evaluate", "params": {"expression": stealth_js}}))
+                await ws.send(json.dumps({"id": 103, "method": "Page.addScriptToEvaluateOnNewDocument", "params": {"source": stealth_js}}))
+                await ws.send(json.dumps({"id": 104, "method": "Runtime.evaluate", "params": {"expression": stealth_js}}))
 
-                # 3. 动态智能内容就绪侦听 (Dynamic Content Settle)
+                # 3. 注入登录态 Cookies
+                cdp_cookies = CookieHelper.to_cdp_cookies(cookies, options.url)
+                if cdp_cookies:
+                    await ws.send(json.dumps({
+                        "id": 105,
+                        "method": "Network.setCookies",
+                        "params": {"cookies": cdp_cookies}
+                    }))
+
+                # 4. 注入额外 HTTP 请求头 (如 Authorization 等)
+                if extra_headers:
+                    await ws.send(json.dumps({
+                        "id": 106,
+                        "method": "Network.setExtraHTTPHeaders",
+                        "params": {"headers": extra_headers}
+                    }))
+
+                # 5. 导航到目标网页 (如果是接管已打开的活跃页面且未强制跳转，则跳过 navigate)
+                if not options.attach_tab or (options.url and options.url != "about:blank"):
+                    await ws.send(json.dumps({
+                        "id": 107,
+                        "method": "Page.navigate",
+                        "params": {"url": options.url}
+                    }))
+
+                # 6. 动态智能内容就绪侦听 (Dynamic Content Settle)
                 # 替代固定的 sleep 傻等，只要页面出现实质文字且脱离 Loading 状态，立即提前进入提取！
                 poll_js = r"""
                 (() => {
@@ -215,10 +402,18 @@ class ScrapeEngine:
                         "method": "Runtime.evaluate",
                         "params": {"expression": poll_js, "returnByValue": True}
                     }))
-                    msg_str = await asyncio.wait_for(ws.recv(), timeout=2.0)
-                    msg_obj = json.loads(msg_str)
-                    if msg_obj.get("id") == 888 and msg_obj.get("result", {}).get("result", {}).get("value") is True:
-                        settled = True
+                    try:
+                        # 兼容过滤其他异步事件广播，精确寻找 id=888 的响应
+                        for _ in range(4):
+                            msg_str = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                            msg_obj = json.loads(msg_str)
+                            if msg_obj.get("id") == 888:
+                                if msg_obj.get("result", {}).get("result", {}).get("value") is True:
+                                    settled = True
+                                break
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                    if settled:
                         break
 
                 # 4. 深度交互探索 (若开启 deep_explore)
@@ -397,11 +592,12 @@ class ScrapeEngine:
 
         finally:
             updater.leave_task()
-            try:
-                async with httpx.AsyncClient() as client:
-                    await client.get(f"http://127.0.0.1:{self.port}/json/close/{target_id}", timeout=2)
-            except Exception:
-                pass
+            if should_close_tab and target_id and cdp_base:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.get(f"{cdp_base}/json/close/{target_id}", timeout=2)
+                except Exception:
+                    pass
 
     async def scrape_urls_concurrent(
         self,
