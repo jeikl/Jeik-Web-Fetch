@@ -477,17 +477,51 @@ class ScrapeEngine:
                         } catch(e) {}
                     }
 
-                    // 3. 遍历未激活的选项卡 (Tab Switching)
-                    const tabs = Array.from(document.querySelectorAll("[role=\"tab\"], .next-tabs-tab, .ant-tabs-tab, .tab-item"));
-                    for (let i = 0; i < Math.min(tabs.length, 15); i++) {
-                        const t = tabs[i];
+                    // 3. 多语言代码 Tab 遍历与全量采集 (cURL, Python, Go, Node.js, Java 等)
+                    const langCodeSamples = [];
+                    const codeTabs = Array.from(document.querySelectorAll("[role='tab'], .openapi-tabs__tab, .tabs__item")).filter(t => {
+                        const txt = (t.innerText || "").trim().toUpperCase();
+                        return ["CURL", "PYTHON", "GO", "NODEJS", "JAVA", "PHP", "RUBY", "C#", "JAVASCRIPT", "TYPESCRIPT", "RUST", "BASH", "SHELL"].includes(txt);
+                    });
+                    const seenLangs = new Set();
+                    for (const t of codeTabs) {
+                        const lang = t.innerText.trim();
+                        if (seenLangs.has(lang)) continue;
+                        seenLangs.add(lang);
                         try {
                             t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
                             await new Promise(r => setTimeout(r, 200));
+                            const rightPanel = document.querySelector(".openapi-right-panel__container, [class*='right-panel'], [class*='code-panel']") || document.body;
+                            const pres = Array.from(rightPanel.querySelectorAll("pre"));
+                            const activePre = pres[pres.length - 1];
+                            if (activePre && activePre.innerText.trim().length > 10) {
+                                langCodeSamples.push({
+                                    language: lang,
+                                    code: activePre.innerText.trim()
+                                });
+                            }
+                        } catch(e) {}
+                    }
+                    // 恢复点击第一个代码 tab (优先保证主流 cURL 留存当前视图)
+                    if (codeTabs.length > 0) {
+                        try {
+                            codeTabs[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await new Promise(r => setTimeout(r, 100));
                         } catch(e) {}
                     }
 
-                    // 4. Monaco Editor 内存模型还原 (杜绝长代码截断)
+                    // 4. 遍历其他未激活的通用选项卡 (General Tab Switching)
+                    const otherTabs = Array.from(document.querySelectorAll("[role=\"tab\"], .next-tabs-tab, .ant-tabs-tab, .tab-item"))
+                        .filter(t => !codeTabs.includes(t));
+                    for (let i = 0; i < Math.min(otherTabs.length, 10); i++) {
+                        const t = otherTabs[i];
+                        try {
+                            t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await new Promise(r => setTimeout(r, 150));
+                        } catch(e) {}
+                    }
+
+                    // 5. Monaco Editor 内存模型还原 (杜绝长代码截断)
                     if (window.monaco && window.monaco.editor) {
                         const models = window.monaco.editor.getModels();
                         const editors = document.querySelectorAll(".monaco-editor");
@@ -503,7 +537,7 @@ class ScrapeEngine:
                         });
                     }
 
-                    // 5. CodeMirror 还原
+                    // 6. CodeMirror 还原
                     document.querySelectorAll(".CodeMirror").forEach(cm => {
                         if (cm.CodeMirror) {
                             const pre = document.createElement("pre");
@@ -514,16 +548,22 @@ class ScrapeEngine:
                         }
                     });
 
-                    // 6. 展开常见折叠抽屉
+                    // 7. 展开常见折叠抽屉与参数树
                     document.querySelectorAll("details:not([open])").forEach(d => d.setAttribute("open", "true"));
 
-                    // 7. 捕获文档侧边栏导航容器
-                    const asideEl = document.querySelector("aside, .sidebar, [class*=\"sidebar\"], nav[class*=\"menu\"]");
+                    // 8. 捕获文档侧边栏导航容器 (精准筛选包含实质超链接的容器，避免命中无链接的 backdrop/遮罩)
+                    const asideCandidates = Array.from(document.querySelectorAll("aside, [class*='sidebar-container'], [class*='docSidebar'], nav[aria-label*='sidebar' i], nav[class*='menu']"));
+                    const asideEl = asideCandidates.find(el => el.querySelectorAll("a").length >= 2) || document.querySelector("aside");
+
+                    // 9. 捕获底部分页导航 (Previous / Next)
+                    const paginationEl = document.querySelector(".pagination-nav, nav[aria-label*='pagination' i], nav[aria-label*='Pages' i]");
 
                     return {
                         html: document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML,
                         drawers: extractedDrawers.join("\n\n"),
-                        sidebar: asideEl ? asideEl.outerHTML : ""
+                        sidebar: asideEl ? asideEl.outerHTML : "",
+                        pagination: paginationEl ? paginationEl.outerHTML : "",
+                        code_samples: langCodeSamples
                     };
                 })()
                 """
@@ -533,6 +573,8 @@ class ScrapeEngine:
                 raw_html = ""
                 drawers_text = ""
                 sidebar_html = ""
+                pagination_html = ""
+                code_samples = []
                 while True:
                     msg_str = await asyncio.wait_for(ws.recv(), timeout=options.timeout)
                     msg = json.loads(msg_str)
@@ -542,6 +584,8 @@ class ScrapeEngine:
                             raw_html = val.get("html", "")
                             drawers_text = val.get("drawers", "")
                             sidebar_html = val.get("sidebar", "")
+                            pagination_html = val.get("pagination", "")
+                            code_samples = val.get("code_samples", [])
                         else:
                             raw_html = str(val)
                         break
@@ -557,7 +601,9 @@ class ScrapeEngine:
                 drawers_text,
                 options.url,
                 options.include_sidebar,
-                sidebar_html
+                sidebar_html,
+                code_samples,
+                pagination_html
             )
 
             # 严格错误校验：如果提取出的 Markdown 与纯文本全为空，且 HTML 包含网络阻断错误

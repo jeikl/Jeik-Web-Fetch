@@ -17,9 +17,11 @@ def html_to_markdown(html_content: str, base_url: str = None, include_sidebar: b
 
     # 提取侧边栏导航与文档超链接
     sidebar_md = ""
+    pagination_md = ""
     if include_sidebar:
         from .transformers.content import ContentTransformer
         sidebar_md = ContentTransformer.extract_sidebar_navigation(soup, base_url=base_url)
+        pagination_md = ContentTransformer.extract_pagination(soup, base_url=base_url)
 
     # 1. 过滤垃圾与噪音标签
     for tag in soup(["script", "style", "head", "noscript", "svg", "iframe", "footer", "nav", "aside"]):
@@ -111,6 +113,8 @@ def html_to_markdown(html_content: str, base_url: str = None, include_sidebar: b
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
     text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", text, flags=re.I)
+    if pagination_md:
+        text += f"\n\n{pagination_md}"
     if sidebar_md:
         text += f"\n\n{sidebar_md}"
     return text.strip()

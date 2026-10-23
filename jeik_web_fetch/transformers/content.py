@@ -61,35 +61,63 @@ class ContentTransformer:
         grouped_sections = []
         seen_hrefs = set()
 
-        category_btns = aside.find_all(lambda el: el.name in ["button", "h3", "h4", "h5", "div"] and 0 < len(el.get_text().strip()) <= 20 and not el.find("a"))
-        valid_categories = []
-        for btn in category_btns:
-            btn_txt = btn.get_text().strip()
-            if btn_txt in ["Ctrl", "搜索文档", "搜索", "Search", ""]:
+        # 1. 优先尝试适配 Docusaurus 风格的分类 (theme-doc-sidebar-item-category)
+        docusaurus_cats = aside.find_all(class_=lambda c: c and "theme-doc-sidebar-item-category" in str(c))
+        for cat in docusaurus_cats:
+            title_el = cat.find(class_=lambda c: c and any(k in str(c) for k in ["menu__list-item-collapsible", "menu__link--sublist", "category"]))
+            if not title_el:
+                title_el = cat.find(["a", "span", "div", "button"])
+            cat_title = title_el.get_text().strip() if title_el else ""
+            if not cat_title or len(cat_title) > 30:
                 continue
-            p = btn.parent
-            while p and p != aside and len(p.find_all("a")) == 0:
-                p = p.parent
-            if p and len(p.find_all("a")) > 0:
-                valid_categories.append((btn_txt, p))
 
-        if valid_categories:
-            for cat_title, container in valid_categories:
-                cat_links = []
-                for a in container.find_all("a"):
-                    href = a.get("href", "").strip()
-                    if not href or href.startswith("javascript:"):
-                        continue
-                    full_href = urljoin(base_url, href) if base_url else href
-                    if full_href in seen_hrefs:
-                        continue
-                    seen_hrefs.add(full_href)
-                    txt = a.get_text().strip()
-                    txt = re.sub(r'^(POST|GET|PUT|DELETE|PATCH)([A-Za-z\u4e00-\u9fa5])', r'\1 \2', txt)
-                    cat_links.append((txt, full_href))
-                if cat_links:
-                    grouped_sections.append((cat_title, cat_links))
+            cat_links = []
+            for a in cat.find_all("a"):
+                href = a.get("href", "").strip()
+                if not href or href.startswith("javascript:"):
+                    continue
+                full_href = urljoin(base_url, href) if base_url else href
+                if full_href in seen_hrefs:
+                    continue
+                seen_hrefs.add(full_href)
+                txt = a.get_text().strip()
+                txt = re.sub(r'^(POST|GET|PUT|DELETE|PATCH)([A-Za-z\u4e00-\u9fa5])', r'\1 \2', txt)
+                cat_links.append((txt, full_href))
+            if cat_links:
+                grouped_sections.append((cat_title, cat_links))
 
+        # 2. 如果未命中 Docusaurus 风格，尝试通用按钮/标题分组 (如 MiMo, Mintlify)
+        if not grouped_sections:
+            category_btns = aside.find_all(lambda el: el.name in ["button", "h3", "h4", "h5", "div"] and 0 < len(el.get_text().strip()) <= 20 and not el.find("a"))
+            valid_categories = []
+            for btn in category_btns:
+                btn_txt = btn.get_text().strip()
+                if btn_txt in ["Ctrl", "搜索文档", "搜索", "Search", ""]:
+                    continue
+                p = btn.parent
+                while p and p != aside and len(p.find_all("a")) == 0:
+                    p = p.parent
+                if p and len(p.find_all("a")) > 0:
+                    valid_categories.append((btn_txt, p))
+
+            if valid_categories:
+                for cat_title, container in valid_categories:
+                    cat_links = []
+                    for a in container.find_all("a"):
+                        href = a.get("href", "").strip()
+                        if not href or href.startswith("javascript:"):
+                            continue
+                        full_href = urljoin(base_url, href) if base_url else href
+                        if full_href in seen_hrefs:
+                            continue
+                        seen_hrefs.add(full_href)
+                        txt = a.get_text().strip()
+                        txt = re.sub(r'^(POST|GET|PUT|DELETE|PATCH)([A-Za-z\u4e00-\u9fa5])', r'\1 \2', txt)
+                        cat_links.append((txt, full_href))
+                    if cat_links:
+                        grouped_sections.append((cat_title, cat_links))
+
+        # 3. 收集未分组的剩余链接
         remaining_links = []
         for a in all_links:
             href = a.get("href", "").strip()
@@ -106,18 +134,47 @@ class ContentTransformer:
             return ""
 
         md_lines = ["\n\n---\n\n## 📚 关联文档与目录导航 (Sidebar Links)\n"]
+        if remaining_links and grouped_sections:
+            md_lines.append("\n### 核心接口\n")
+            for txt, href in remaining_links:
+                md_lines.append(f"- [{txt}]({href})")
+        elif remaining_links:
+            for txt, href in remaining_links:
+                md_lines.append(f"- [{txt}]({href})")
+
         for cat_title, cat_links in grouped_sections:
             md_lines.append(f"\n### {cat_title}\n")
             for txt, href in cat_links:
                 md_lines.append(f"- [{txt}]({href})")
 
-        if remaining_links:
-            if grouped_sections:
-                md_lines.append("\n### 其他文档\n")
-            for txt, href in remaining_links:
-                md_lines.append(f"- [{txt}]({href})")
-
         return "\n".join(md_lines)
+
+    @classmethod
+    def extract_pagination(cls, soup: BeautifulSoup, base_url: Optional[str] = None) -> str:
+        """提取底部分页 (Previous / Next) 导航"""
+        nav = soup.find(class_=lambda c: c and any(k in str(c) for k in ["pagination-nav", "docs-pagination"]))
+        if not nav:
+            nav = soup.find("nav", attrs={"aria-label": re.compile(r"pagination|pages", re.I)})
+        if not nav:
+            return ""
+
+        prev_a = nav.find(class_=lambda c: c and "prev" in str(c))
+        next_a = nav.find(class_=lambda c: c and "next" in str(c))
+
+        parts = []
+        if prev_a and prev_a.get("href"):
+            txt = prev_a.get_text().replace("Previous", "").replace("上一页", "").strip() or "Previous"
+            href = urljoin(base_url, prev_a["href"]) if base_url else prev_a["href"]
+            parts.append(f"**Previous:** [{txt}]({href})")
+
+        if next_a and next_a.get("href"):
+            txt = next_a.get_text().replace("Next", "").replace("下一页", "").strip() or "Next"
+            href = urljoin(base_url, next_a["href"]) if base_url else next_a["href"]
+            parts.append(f"**Next:** [{txt}]({href})")
+
+        if parts:
+            return "\n\n---\n\n" + " | ".join(parts) + "\n"
+        return ""
 
     @classmethod
     def transform(
@@ -128,7 +185,9 @@ class ContentTransformer:
         drawers_text: Optional[str] = None,
         base_url: Optional[str] = None,
         include_sidebar: bool = True,
-        sidebar_html: Optional[str] = None
+        sidebar_html: Optional[str] = None,
+        code_samples: Optional[List[Dict[str, str]]] = None,
+        pagination_html: Optional[str] = None
     ) -> Dict[str, Any]:
         result = {}
 
@@ -150,6 +209,14 @@ class ContentTransformer:
                 sidebar_md = cls.extract_sidebar_navigation(sb_soup, base_url=base_url)
             else:
                 sidebar_md = cls.extract_sidebar_navigation(soup, base_url=base_url)
+
+        # 提取底部分页导航 (Previous / Next)
+        pagination_md = ""
+        if pagination_html:
+            p_soup = BeautifulSoup(pagination_html, "html.parser")
+            pagination_md = cls.extract_pagination(p_soup, base_url=base_url)
+        else:
+            pagination_md = cls.extract_pagination(soup, base_url=base_url)
 
         # 过滤噪音标签
         for tag in soup(["script", "style", "head", "noscript", "svg", "iframe"]):
@@ -217,7 +284,22 @@ class ContentTransformer:
                 clean_code = "\n".join(lines)
                 pre.replace_with(f"\n\n```\n{clean_code}\n```\n\n")
 
-            # 2. 标题
+            # 2. 格式化 OpenAPI / Swagger 参数列表 (结构化解析，避免字段类型与描述挤在单行)
+            for item in work_soup.find_all(class_=lambda c: c and any(k in str(c) for k in ["openapi-schema__list-item", "schema-property"])):
+                prop_el = item.find(class_=lambda c: c and "openapi-schema__property" in str(c))
+                prop = prop_el.get_text().strip() if prop_el else ""
+                type_el = item.find(class_=lambda c: c and "openapi-schema__name" in str(c))
+                type_name = type_el.get_text().strip() if type_el else ""
+                req_el = item.find(class_=lambda c: c and any(k in str(c).lower() for k in ["required", "nullable"]))
+                badge = f" `[{req_el.get_text().strip()}]`" if req_el else ""
+
+                p_texts = [p.get_text().strip() for p in item.find_all("p") if p.get_text().strip()]
+                desc_str = "\n  - ".join(p_texts)
+                desc_part = f"\n  - {desc_str}" if desc_str else ""
+                md_item = f"\n\n- `{prop}` *({type_name})*{badge}{desc_part}\n\n"
+                item.replace_with(work_soup.new_string(md_item))
+
+            # 3. 标题
             for i in range(6, 0, -1):
                 for h in work_soup.find_all(f"h{i}"):
                     h_text = h.get_text().strip()
@@ -257,6 +339,20 @@ class ContentTransformer:
             # 清除可能残留于文档末尾的孤立 Loading 占位符
             md_text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", md_text, flags=re.I)
             
+            # 多语言代码示例挂载
+            if code_samples:
+                code_lines = ["\n\n---\n\n## 💻 代码示例与多语言 SDK (Code Samples)\n"]
+                for s in code_samples:
+                    lang = s.get("language", "cURL").strip()
+                    code = s.get("code", "").strip()
+                    fence = "bash" if lang.upper() in ["CURL", "SHELL", "BASH"] else lang.lower()
+                    code_lines.append(f"\n### {lang}\n\n```{fence}\n{code}\n```\n")
+                md_text += "\n".join(code_lines)
+
+            # 底部分页导航挂载
+            if pagination_md:
+                md_text += f"\n\n{pagination_md}"
+
             # 如果提取到了抽屉/弹窗中的详细规则与细则，高保真挂载在附录章节中
             if drawers_text and drawers_text.strip():
                 clean_drawers = re.sub(r"[ \t]+", " ", drawers_text.strip())
