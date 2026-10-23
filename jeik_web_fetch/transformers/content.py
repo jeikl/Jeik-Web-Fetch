@@ -44,15 +44,24 @@ class ContentTransformer:
     @classmethod
     def extract_sidebar_navigation(cls, soup: BeautifulSoup, base_url: Optional[str] = None) -> str:
         """
-        高保真提取文档系统（Docusaurus, Mintlify, VitePress, Nextra 等）的侧边栏菜单与超链接：
+        高保真提取文档系统（Docusaurus, Mintlify, VitePress, DingTalk, Nextra 等）的侧边栏菜单与超链接：
         - 识别目录分组与接口列表；
         - 将相对路径解析为完整的绝对 HTTP/HTTPS URL；
         - 标准化 HTTP Method 标记 (POST / GET / PUT / DELETE)；
         - 挂载为清晰严谨的 Markdown 目录导航。
         """
-        aside = soup.find("aside") or soup.find(class_=lambda c: c and any(k in str(c).lower() for k in ["sidebar", "doc-sidebar", "menu__list", "docs-nav"]))
+        # 兼容自愈：如果传入的 soup 已经是切好的侧边栏片段自身，直接作为 aside 使用
+        aside = None
+        if soup.name in ["aside", "nav", "div", "section"]:
+            if len(soup.find_all("a")) >= 2:
+                aside = soup
         if not aside:
-            return ""
+            aside = soup.find("aside") or soup.find(class_=lambda c: c and any(k in str(c).lower() for k in ["sidebar", "doc-sidebar", "menu__list", "docs-nav", "treemenu", "layout-sider"]))
+        if not aside:
+            if len(soup.find_all("a")) >= 2:
+                aside = soup
+            else:
+                return ""
 
         all_links = aside.find_all("a")
         if len(all_links) < 2:
@@ -150,6 +159,26 @@ class ContentTransformer:
         return "\n".join(md_lines)
 
     @classmethod
+    def extract_in_page_toc(cls, soup: BeautifulSoup) -> str:
+        """从文档主体的 H2/H3 标题自动构建本页大纲目录 (In-Page Table of Contents)"""
+        headings = soup.find_all(["h2", "h3"])
+        valid_h = []
+        for h in headings:
+            t = h.get_text().strip()
+            if not t or any(k in t.lower() for k in ["目录", "contents", "导航", "附录", "代码示例", "相关链接"]):
+                continue
+            valid_h.append((h.name, t))
+
+        if len(valid_h) < 2:
+            return ""
+
+        lines = ["\n\n## 📑 本页大纲目录 (Table of Contents)\n"]
+        for tag_name, t in valid_h:
+            indent = "  " if tag_name == "h3" else ""
+            lines.append(f"{indent}- {t}")
+        return "\n".join(lines)
+
+    @classmethod
     def extract_pagination(cls, soup: BeautifulSoup, base_url: Optional[str] = None) -> str:
         """提取底部分页 (Previous / Next) 导航"""
         nav = soup.find(class_=lambda c: c and any(k in str(c) for k in ["pagination-nav", "docs-pagination"]))
@@ -177,6 +206,108 @@ class ContentTransformer:
         return ""
 
     @classmethod
+    def extract_header_navigation(
+        cls,
+        soup: BeautifulSoup,
+        base_url: Optional[str] = None,
+        header_links: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        """提取顶栏菜单与全局导航 (Header Navigation)"""
+        links_to_use = []
+        seen = set()
+        if header_links:
+            for it in header_links:
+                t = it.get("text", "").strip()
+                h = it.get("href", "").strip()
+                if t and h and h != "#" and not h.startswith("javascript:"):
+                    full_h = urljoin(base_url, h) if base_url else h
+                    if full_h not in seen:
+                        seen.add(full_h)
+                        links_to_use.append((t, full_h))
+        else:
+            header_el = soup.find(["header", "nav"]) or soup.find(class_=lambda c: c and "navbar" in str(c).lower())
+            if header_el:
+                for a in header_el.find_all("a"):
+                    t = a.get_text().strip()
+                    h = a.get("href", "").strip()
+                    if t and h and h != "#" and not h.startswith("javascript:"):
+                        full_h = urljoin(base_url, h) if base_url else h
+                        if full_h not in seen:
+                            seen.add(full_h)
+                            links_to_use.append((t, full_h))
+
+        if not links_to_use:
+            return ""
+
+        md_lines = ["\n\n---\n\n## 🌐 顶栏与全局导航 (Header Navigation)\n"]
+        for t, h in links_to_use:
+            md_lines.append(f"- [{t}]({h})")
+        return "\n".join(md_lines)
+
+    @classmethod
+    def extract_contacts_and_footer(
+        cls,
+        soup: BeautifulSoup,
+        base_url: Optional[str] = None,
+        contacts_data: Optional[List[Dict[str, str]]] = None,
+        footer_text: Optional[str] = None
+    ) -> str:
+        """高保真提取联系方式、商务/技术支持、社区渠道 (Discord/GitHub/Twitter/微信) 与版权声明"""
+        contacts_list = []
+        seen = set()
+        if contacts_data:
+            for it in contacts_data:
+                t = it.get("text", "").strip()
+                h = it.get("href", "").strip()
+                if h and h != "#" and not h.startswith("javascript:"):
+                    full_h = urljoin(base_url, h) if base_url else h
+                    if full_h not in seen:
+                        seen.add(full_h)
+                        contacts_list.append((t or full_h, full_h))
+        else:
+            contact_re = re.compile(r"联系|contact|support|email|mail|discord|github|twitter|wechat|微信|telegram|反馈", re.I)
+            for a in soup.find_all("a"):
+                t = a.get_text().strip()
+                h = a.get("href", "").strip()
+                if not h or h == "#" or h.startswith("javascript:"):
+                    continue
+                lower_h = h.lower()
+                if contact_re.search(t) or lower_h.startswith("mailto:") or any(k in lower_h for k in ["contact", "discord.gg", "twitter.com", "github.com"]):
+                    full_h = urljoin(base_url, h) if base_url else h
+                    if full_h not in seen:
+                        seen.add(full_h)
+                        label = t or (full_h[7:] if lower_h.startswith("mailto:") else full_h)
+                        contacts_list.append((label, full_h))
+
+        if not contacts_list and not (footer_text and footer_text.strip()):
+            return ""
+
+        md_lines = ["\n\n---\n\n## 📞 联系方式与社区支持 (Contact & Community)\n"]
+        for t, h in contacts_list:
+            lower_h = h.lower()
+            if lower_h.startswith("mailto:"):
+                email_addr = h[7:]
+                md_lines.append(f"- **官方/技术支持邮箱:** [{email_addr}]({h})")
+            elif "discord.gg" in lower_h:
+                md_lines.append(f"- **Discord 开发者社区:** [{t or 'Join Discord'}]({h})")
+            elif "github.com" in lower_h:
+                md_lines.append(f"- **GitHub 官方仓库:** [{t or 'GitHub Repo'}]({h})")
+            elif "twitter.com" in lower_h or "x.com" in lower_h:
+                md_lines.append(f"- **Twitter / X 官方动态:** [{t or 'Follow Twitter'}]({h})")
+            elif "contact" in lower_h or "联系" in t:
+                md_lines.append(f"- **商务与技术支持:** [{t or '联系我们'}]({h})")
+            else:
+                md_lines.append(f"- [{t}]({h})")
+
+        if footer_text and footer_text.strip():
+            for line in footer_text.splitlines():
+                line_str = line.strip()
+                if any(k in line_str.lower() for k in ["copyright", "wechat", "微信", "icp", "公网安备", "all rights reserved"]):
+                    md_lines.append(f"- {line_str}")
+
+        return "\n".join(md_lines)
+
+    @classmethod
     def transform(
         cls,
         raw_html: str,
@@ -188,7 +319,10 @@ class ContentTransformer:
         sidebar_html: Optional[str] = None,
         code_samples: Optional[List[Dict[str, str]]] = None,
         pagination_html: Optional[str] = None,
-        scenarios: Optional[List[Dict[str, str]]] = None
+        scenarios: Optional[List[Dict[str, str]]] = None,
+        contacts_data: Optional[List[Dict[str, str]]] = None,
+        footer_text: Optional[str] = None,
+        header_links: Optional[List[Dict[str, str]]] = None
     ) -> Dict[str, Any]:
         result = {}
 
@@ -242,8 +376,19 @@ class ContentTransformer:
                 if not el.find(["p", "pre", "code", "table", "h1", "h2", "h3", "h4", "h5", "h6"]):
                     el.decompose()
 
-        # 处理 Monaco Editor 等代码框
-        for monaco in soup.find_all(class_=lambda c: c and any(k in str(c) for k in ["monaco-editor", "code-block", "highlight"])):
+        # 真实代码编辑器精准识别 (Monaco Editor / CodeMirror / Ace)，严禁模糊匹配 highlight 误伤 Tailwind 颜色标签
+        def is_real_code_editor(tag):
+            if not tag or not tag.has_attr("class"):
+                return False
+            classes = tag.get("class", [])
+            classes_list = classes if isinstance(classes, list) else str(classes).split()
+            for c in classes_list:
+                c_low = c.lower()
+                if c_low in ["monaco-editor", "codemirror", "ace_editor"] or "monaco-editor" in c_low:
+                    return True
+            return False
+
+        for monaco in soup.find_all(is_real_code_editor):
             lines = []
             for line in monaco.find_all(class_=lambda c: c and "view-line" in str(c)):
                 line_str = line.get_text().replace("\xa0", " ").strip()
@@ -307,12 +452,19 @@ class ContentTransformer:
                     stxt = summary.get_text().strip()
                     summary.replace_with(work_soup.new_string(f"\n\n- **{stxt}**\n\n"))
 
-            # 3. 标题
+            # 提取本页大纲目录 (Table of Contents)
+            in_page_toc = cls.extract_in_page_toc(work_soup)
+
+            # 3. 标题转换与本页大纲目录自动挂载
             for i in range(6, 0, -1):
                 for h in work_soup.find_all(f"h{i}"):
                     h_text = h.get_text().strip()
                     if h_text:
-                        h.replace_with(f"\n\n{'#' * i} {h_text}\n\n")
+                        if i == 1 and in_page_toc:
+                            h.replace_with(f"\n\n# {h_text}\n\n{in_page_toc}\n\n")
+                            in_page_toc = ""
+                        else:
+                            h.replace_with(f"\n\n{'#' * i} {h_text}\n\n")
 
             # 3. 表格
             for table in work_soup.find_all("table"):
@@ -374,6 +526,11 @@ class ContentTransformer:
             if pagination_md:
                 md_text += f"\n\n{pagination_md}"
 
+            # 顶栏菜单与全局导航挂载
+            header_md = cls.extract_header_navigation(soup, base_url=base_url, header_links=header_links)
+            if header_md:
+                md_text += f"\n\n{header_md}"
+
             # 如果提取到了抽屉/弹窗中的详细规则与细则，高保真挂载在附录章节中
             if drawers_text and drawers_text.strip():
                 clean_drawers = re.sub(r"[ \t]+", " ", drawers_text.strip())
@@ -383,6 +540,11 @@ class ContentTransformer:
             # 挂载文档目录与接口超链接导航
             if sidebar_md:
                 md_text += f"\n\n{sidebar_md}"
+
+            # 挂载联系方式与社区支持 (Email / Discord / GitHub / Twitter / 联系我们)
+            contacts_md = cls.extract_contacts_and_footer(soup, base_url=base_url, contacts_data=contacts_data, footer_text=footer_text)
+            if contacts_md:
+                md_text += f"\n\n{contacts_md}"
 
             result["markdown"] = md_text.strip()
 

@@ -42,8 +42,19 @@ def html_to_markdown(html_content: str, base_url: str = None, include_sidebar: b
             if not el.find(["p", "pre", "code", "table", "h1", "h2", "h3", "h4", "h5", "h6"]):
                 el.decompose()
 
-    # 2. 识别并提取复杂代码框 (Monaco Editor / CodeMirror / Prism / Highlight.js)
-    for monaco in soup.find_all(class_=lambda c: c and any(k in str(c) for k in ["monaco-editor", "code-block", "highlight"])):
+    # 2. 识别并提取复杂代码框 (Monaco Editor / CodeMirror / Ace)
+    def is_real_code_editor(tag):
+        if not tag or not tag.has_attr("class"):
+            return False
+        classes = tag.get("class", [])
+        classes_list = classes if isinstance(classes, list) else str(classes).split()
+        for c in classes_list:
+            c_low = c.lower()
+            if c_low in ["monaco-editor", "codemirror", "ace_editor"] or "monaco-editor" in c_low:
+                return True
+        return False
+
+    for monaco in soup.find_all(is_real_code_editor):
         lines = []
         for line in monaco.find_all(class_=lambda c: c and "view-line" in str(c)):
             line_str = line.get_text().replace("\xa0", " ").strip()

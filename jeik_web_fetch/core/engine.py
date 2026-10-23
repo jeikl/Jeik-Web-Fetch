@@ -543,7 +543,9 @@ class ScrapeEngine:
                                 await new Promise(r => setTimeout(r, 200));
                             } catch(e) {}
                             const pres = Array.from(document.querySelectorAll("pre")).map(p => p.innerText.trim()).filter(s => s.length > 10);
-                            const reqCode = pres.find(c => c.includes("curl") || c.includes("POST") || c.includes("GET") || c.includes("http")) || pres[0] || "";
+                            const reqCode = pres.find(c => c.includes("curl ") || c.includes("curl\n") || c.includes("--location") || c.includes("--header") || c.includes("requests.") || c.includes("axios.") || c.includes("http.Client") || c.includes("OkHttpClient")) ||
+                                            pres.find(c => c.split("\n").length >= 3 && (c.includes("POST") || c.includes("GET"))) ||
+                                            pres[0] || "";
                             const resJson = pres.find(c => c !== reqCode && (c.startsWith("{") || c.startsWith("[") || c.includes("\"id\":") || c.includes("\"choices\":"))) || (pres.length > 1 ? pres[1] : "");
                             harvestedScenarios.push({
                                 scenario: sc.name,
@@ -629,9 +631,32 @@ class ScrapeEngine:
                         }
                     });
 
-                    // 9. 通用侧边栏精确定位 (包含 Mintlify, Docusaurus, Ark, MiMo, VitePress 几何/类名双模探测)
+                    // 8.5 支持 Ant Design Tree / 钉钉及阿里系文档树结构 (DingTalk, Alibaba, etc.)
+                    const antTree = document.querySelector(".ant-tree, [class*='treeMenu'], [class*='layout-sider']");
+                    if (antTree) {
+                        const treeNodes = Array.from(antTree.querySelectorAll(".ant-tree-treenode"));
+                        if (treeNodes.length >= 3) {
+                            treeNodes.forEach(node => {
+                                if (node.querySelectorAll("a").length === 0) {
+                                    const spanWithId = node.querySelector("[id]");
+                                    const titleSpan = node.querySelector(".ant-tree-title") || node;
+                                    const text = titleSpan.innerText.trim();
+                                    if (spanWithId && spanWithId.id && text) {
+                                        const slug = spanWithId.id;
+                                        const a = document.createElement("a");
+                                        const isDingTalk = location.hostname.includes("dingtalk.com");
+                                        a.href = isDingTalk ? ("/document/development/" + slug) : slug;
+                                        a.innerText = text;
+                                        node.appendChild(a);
+                                    }
+                                }
+                            });
+                        }
+                    }
+
+                    // 9. 通用侧边栏精确定位 (包含 Mintlify, Docusaurus, Ark, MiMo, VitePress, DingTalk 几何/类名双模探测)
                     let asideEl = null;
-                    const asideCandidates = Array.from(document.querySelectorAll("aside, nav[class*='sticky'], [class*='sidebar'], [class*='docSidebar'], nav[aria-label*='sidebar' i], nav[class*='menu']"));
+                    const asideCandidates = Array.from(document.querySelectorAll("aside, [class*='layout-sider'], [class*='treeMenu'], .ant-tree, nav[class*='sticky'], [class*='sidebar'], [class*='docSidebar'], nav[aria-label*='sidebar' i], nav[class*='menu']"));
                     asideEl = asideCandidates.find(el => el.querySelectorAll("a").length >= 2);
                     if (!asideEl) {
                         const leftNavs = Array.from(document.querySelectorAll("div, nav, section")).filter(el => {
@@ -646,13 +671,48 @@ class ScrapeEngine:
                     // 10. 捕获底部分页导航 (Previous / Next)
                     const paginationEl = document.querySelector(".pagination-nav, nav[aria-label*='pagination' i], nav[aria-label*='Pages' i], [class*='pagination']");
 
+                    // 11. 全站联系方式与社区支持探测 (Contacts & Community Support)
+                    const contactsData = [];
+                    const seenContactHrefs = new Set();
+                    const contactKeywords = /联系|contact|support|email|mail|discord|github|twitter|wechat|微信|telegram|反馈|feedback/i;
+                    Array.from(document.querySelectorAll("a")).forEach(a => {
+                        const text = (a.innerText || "").trim();
+                        const href = a.getAttribute("href") || "";
+                        if (!href || href === "#" || href.startsWith("javascript:")) return;
+                        const lowerH = href.toLowerCase();
+                        const isContact = contactKeywords.test(text) || lowerH.startsWith("mailto:") || lowerH.includes("contact") || lowerH.includes("discord.gg") || lowerH.includes("twitter.com") || lowerH.includes("github.com");
+                        if (isContact && !seenContactHrefs.has(href)) {
+                            seenContactHrefs.add(href);
+                            contactsData.push({ text: text || (lowerH.startsWith("mailto:") ? href.substring(7) : href), href });
+                        }
+                    });
+                    const footerEl = document.querySelector("footer, [class*='footer']");
+                    const footerText = footerEl ? footerEl.innerText.trim() : "";
+
+                    // 12. 顶栏菜单与全局导航 (Header Navigation - 包含顶栏下拉与二级Sub-nav)
+                    const headerLinks = [];
+                    const seenNavHrefs = new Set();
+                    Array.from(document.querySelectorAll("header a, nav a, [class*='navbar'] a, [class*='nav-tab'] a, [class*='header'] a, a")).forEach(a => {
+                        const text = (a.innerText || "").trim();
+                        const href = a.getAttribute("href");
+                        if (!text || !href || href === "#" || href.startsWith("javascript:")) return;
+                        const rect = a.getBoundingClientRect();
+                        if (rect.top < 120 && rect.height > 0 && !seenNavHrefs.has(href)) {
+                            seenNavHrefs.add(href);
+                            headerLinks.push({ text, href });
+                        }
+                    });
+
                     return {
                         html: document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML,
                         drawers: extractedDrawers.join("\n\n"),
                         sidebar: asideEl ? asideEl.outerHTML : "",
                         pagination: paginationEl ? paginationEl.outerHTML : "",
                         code_samples: langCodeSamples,
-                        scenarios: harvestedScenarios
+                        scenarios: harvestedScenarios,
+                        contacts: contactsData,
+                        footer_text: footerText,
+                        header_links: headerLinks
                     };
                 })()
                 """
@@ -665,6 +725,9 @@ class ScrapeEngine:
                 pagination_html = ""
                 code_samples = []
                 scenarios = []
+                contacts_data = []
+                footer_text = ""
+                header_links = []
                 while True:
                     msg_str = await asyncio.wait_for(ws.recv(), timeout=options.timeout)
                     msg = json.loads(msg_str)
@@ -677,6 +740,9 @@ class ScrapeEngine:
                             pagination_html = val.get("pagination", "")
                             code_samples = val.get("code_samples", [])
                             scenarios = val.get("scenarios", [])
+                            contacts_data = val.get("contacts", [])
+                            footer_text = val.get("footer_text", "")
+                            header_links = val.get("header_links", [])
                         else:
                             raw_html = str(val)
                         break
@@ -695,7 +761,10 @@ class ScrapeEngine:
                 sidebar_html,
                 code_samples,
                 pagination_html,
-                scenarios
+                scenarios,
+                contacts_data,
+                footer_text,
+                header_links
             )
 
             # 严格错误校验：如果提取出的 Markdown 与纯文本全为空，且 HTML 包含网络阻断错误
