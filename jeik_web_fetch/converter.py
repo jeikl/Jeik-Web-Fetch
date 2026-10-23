@@ -18,6 +18,21 @@ def html_to_markdown(html_content: str) -> str:
     for tag in soup(["script", "style", "head", "noscript", "svg", "iframe", "footer", "nav", "aside"]):
         tag.decompose()
 
+    # 过滤骨架屏与纯 Loading 占位节点
+    for el in list(soup.find_all(True)):
+        if getattr(el, "attrs", None) is None:
+            continue
+        cls_list = el.attrs.get("class", [])
+        cls_name = " ".join(cls_list) if isinstance(cls_list, list) else str(cls_list or "")
+        if any(k in cls_name.lower() for k in ["loadingring", "loadingspinner", "skeleton-wrapper", "loading-skeleton"]):
+            if not el.find(["p", "pre", "code", "table", "h1", "h2", "h3", "h4", "h5", "h6"]):
+                el.decompose()
+                continue
+        txt = el.get_text().strip()
+        if txt in ["Loading...", "Loading", "加载中...", "正在加载..."]:
+            if not el.find(["p", "pre", "code", "table", "h1", "h2", "h3", "h4", "h5", "h6"]):
+                el.decompose()
+
     # 2. 识别并提取复杂代码框 (Monaco Editor / CodeMirror / Prism / Highlight.js)
     for monaco in soup.find_all(class_=lambda c: c and any(k in str(c) for k in ["monaco-editor", "code-block", "highlight"])):
         lines = []
@@ -88,4 +103,5 @@ def html_to_markdown(html_content: str) -> str:
     text = soup.get_text()
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+    text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", text, flags=re.I)
     return text.strip()

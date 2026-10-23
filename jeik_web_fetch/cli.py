@@ -86,7 +86,8 @@ async def run_fetch(
     cdp_endpoint: str = None,
     browser_port: int = None,
     attach_tab: bool = False,
-    tab: str = None
+    tab: str = None,
+    headless: bool = False
 ):
     parsed_headers = {}
     if headers:
@@ -119,7 +120,8 @@ async def run_fetch(
             cdp_endpoint=cdp_endpoint,
             browser_port=browser_port,
             attach_tab=attach_tab,
-            tab=tab
+            tab=tab,
+            headless=headless
         )
         result = await default_engine.scrape_url(options)
         await default_engine.stop()
@@ -155,7 +157,8 @@ async def run_fetch(
                 cdp_endpoint=cdp_endpoint,
                 browser_port=browser_port,
                 attach_tab=attach_tab,
-                tab=tab
+                tab=tab,
+                headless=headless
             ) for u in urls
         ]
         results = await default_engine.scrape_urls_concurrent(options_list, max_workers=max_workers)
@@ -470,6 +473,12 @@ def main():
         default=None,
         help="Match an open tab by title keyword, URL or index in running browser (e.g. --tab '知乎', --tab 1)"
     )
+    fetch_parser.add_argument(
+        "--headless",
+        dest="headless",
+        action="store_true",
+        help="Force using headless browser for full JS rendering, skipping fast HTTP probe"
+    )
 
     # 2. jeik tabs (非技术用户查看当前打开的标签页)
     tabs_parser = subparsers.add_parser("tabs", help="List all open tabs in running browser with friendly index and title")
@@ -539,7 +548,8 @@ def main():
             cdp_endpoint=args.cdp_endpoint,
             browser_port=args.browser_port,
             attach_tab=args.attach_tab,
-            tab=args.tab
+            tab=args.tab,
+            headless=args.headless
         ))
     elif args.command == "tabs":
         run_tabs_command(args)

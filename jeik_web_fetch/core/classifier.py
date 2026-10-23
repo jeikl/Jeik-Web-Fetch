@@ -34,6 +34,12 @@ class ContentQualityClassifier:
         r'<div\s+class=["\'](?:loading-skeleton|skeleton-wrapper)["\']',
     ]
 
+    # 局部未水合的客户端动态组件 / Suspense 骨架占位模式 (Partial Hydration Fallbacks)
+    UNHYDRATED_COMPONENT_PATTERNS = [
+        r'class=[\"\'][^\"\']*(?:panel|code|editor|preview|tab|container|skeleton|wrapper)[^\"\']*[\"\'][^>]*>\s*<(?:div|span|p)[^>]*>\s*(?:loading\.{0,3}|加载中\.{0,3})\s*</(?:div|span|p)>\s*</div>',
+        r'<(?:div|section)[^>]*\baria-busy=["\']true["\']',
+    ]
+
     @classmethod
     def evaluate_html(cls, html: str, status_code: int = 200) -> Tuple[bool, str]:
         """
@@ -70,6 +76,11 @@ class ContentQualityClassifier:
         for pat in cls.SPA_MOUNT_PATTERNS:
             if re.search(pat, html, re.I) and plain_len < 600:
                 return False, f"SPA mount point found with low initial text ({plain_len} chars)"
+
+        # 局部未水合客户端组件检测（即使主体文本很多，但存在核心代码/面板的 Loading... 占位，升级至无头浏览器）
+        for pat in cls.UNHYDRATED_COMPONENT_PATTERNS:
+            if re.search(pat, html, re.I):
+                return False, "Detected unhydrated client component fallback (Loading...), upgrading to headless"
 
         # 4. 文本密度比 (Text-to-Tag Ratio)
         # 正常文章/GitHub/维基百科的纯文本至少有数千字符，且有丰富的标题和段落结构

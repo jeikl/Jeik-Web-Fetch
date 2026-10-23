@@ -36,7 +36,8 @@ def jeik_fetch(
     headers: Optional[dict] = None,
     cdp_endpoint: Optional[str] = None,
     browser_port: Optional[int] = None,
-    attach_tab: bool = False
+    attach_tab: bool = False,
+    headless: bool = False
 ) -> str:
     """
     Jeik-Web-Fetch 原生高性能抓取核心：
@@ -47,7 +48,7 @@ def jeik_fetch(
     - 穿透前端 Monaco / CodeMirror 内存模型，杜绝懒加载代码截断
     - 高保真提取并转为 Markdown
     """
-    if cookies or headers or cdp_endpoint or browser_port or attach_tab:
+    if cookies or headers or cdp_endpoint or browser_port or attach_tab or headless:
         import asyncio
         from .core.models import ScrapeOptions, OutputFormat
         from .core.engine import default_engine
@@ -60,7 +61,8 @@ def jeik_fetch(
             headers=headers,
             cdp_endpoint=cdp_endpoint,
             browser_port=browser_port,
-            attach_tab=attach_tab
+            attach_tab=attach_tab,
+            headless=headless
         )
         try:
             loop = asyncio.get_event_loop()

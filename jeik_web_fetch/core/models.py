@@ -49,6 +49,10 @@ class ScrapeOptions(BaseModel):
         default=None,
         description="按标签页标题关键词、网址或序号模糊匹配运行中浏览器打开的页面 (例如: '知乎', '1', '双11')"
     )
+    headless: bool = Field(
+        default=False,
+        description="强制使用无头浏览器完整渲染，跳过快速 HTTP 探针（适用于包含客户端动态代码块或懒加载组件的页面）"
+    )
 
 class ScrapeResult(BaseModel):
     success: bool

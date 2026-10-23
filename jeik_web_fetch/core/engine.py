@@ -256,8 +256,8 @@ class ScrapeEngine:
                     elapsed_seconds=round(time.time() - t0, 2)
                 )
 
-            # 若未指定外部浏览器且未开启 attach_tab/tab，优先尝试 Tier 1 极速探针
-            if not external_cdp and not options.attach_tab and not options.tab:
+            # 若未指定外部浏览器且未开启 attach_tab/tab/headless，优先尝试 Tier 1 极速探针
+            if not external_cdp and not options.attach_tab and not options.tab and not options.headless:
                 fast_res = await self._try_fast_fetch(options, extra_headers=extra_headers)
                 if fast_res:
                     return fast_res

@@ -70,6 +70,21 @@ class ContentTransformer:
             for tag in soup(["footer", "nav", "aside"]):
                 tag.decompose()
 
+        # 过滤骨架屏与纯 Loading 占位节点 (如 React Suspense Fallback / Spinner / Skeleton)
+        for el in list(soup.find_all(True)):
+            if getattr(el, "attrs", None) is None:
+                continue
+            cls_list = el.attrs.get("class", [])
+            cls_name = " ".join(cls_list) if isinstance(cls_list, list) else str(cls_list or "")
+            if any(k in cls_name.lower() for k in ["loadingring", "loadingspinner", "skeleton-wrapper", "loading-skeleton"]):
+                if not el.find(["p", "pre", "code", "table", "h1", "h2", "h3", "h4", "h5", "h6"]):
+                    el.decompose()
+                    continue
+            txt = el.get_text().strip()
+            if txt in ["Loading...", "Loading", "加载中...", "正在加载..."]:
+                if not el.find(["p", "pre", "code", "table", "h1", "h2", "h3", "h4", "h5", "h6"]):
+                    el.decompose()
+
         # 处理 Monaco Editor 等代码框
         for monaco in soup.find_all(class_=lambda c: c and any(k in str(c) for k in ["monaco-editor", "code-block", "highlight"])):
             lines = []
@@ -150,6 +165,8 @@ class ContentTransformer:
             md_text = work_soup.get_text()
             md_text = re.sub(r"[ \t]+", " ", md_text)
             md_text = re.sub(r"\n\s*\n\s*\n+", "\n\n", md_text)
+            # 清除可能残留于文档末尾的孤立 Loading 占位符
+            md_text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", md_text, flags=re.I)
             
             # 如果提取到了抽屉/弹窗中的详细规则与细则，高保真挂载在附录章节中
             if drawers_text and drawers_text.strip():
