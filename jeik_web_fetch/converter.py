@@ -1,18 +1,25 @@
 import re
 from bs4 import BeautifulSoup
 
-def html_to_markdown(html_content: str) -> str:
+def html_to_markdown(html_content: str, base_url: str = None, include_sidebar: bool = True) -> str:
     """
     将富文本与动态渲染 DOM 转换为优雅、精准的 Markdown：
     1. 彻底清除脚本、样式、追踪器与导航等干扰标签
     2. 原生还原 Monaco / CodeMirror / Prism 等现代前端代码编辑器内容
     3. 标准化表格对齐线与 Markdown 表格语法
     4. 标题、列表、超链接语义化提纯
+    5. 自动结构化提取侧边栏关联文档目录与超链接
     """
     if not html_content:
         return ""
 
     soup = BeautifulSoup(html_content, "html.parser")
+
+    # 提取侧边栏导航与文档超链接
+    sidebar_md = ""
+    if include_sidebar:
+        from .transformers.content import ContentTransformer
+        sidebar_md = ContentTransformer.extract_sidebar_navigation(soup, base_url=base_url)
 
     # 1. 过滤垃圾与噪音标签
     for tag in soup(["script", "style", "head", "noscript", "svg", "iframe", "footer", "nav", "aside"]):
@@ -104,4 +111,6 @@ def html_to_markdown(html_content: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
     text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", text, flags=re.I)
+    if sidebar_md:
+        text += f"\n\n{sidebar_md}"
     return text.strip()

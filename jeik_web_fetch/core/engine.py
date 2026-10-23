@@ -49,6 +49,15 @@ class ScrapeEngine:
             if not self.bin_path:
                 raise RuntimeError("未检测到本地 Chrome / Edge / Chromium，无法启动渲染引擎。")
 
+            # 动态检测并分配可用端口，彻底避免多进程并发调用时端口冲突
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(("127.0.0.1", self.port))
+                except OSError:
+                    s.bind(("127.0.0.1", 0))
+                    self.port = s.getsockname()[1]
+
             self.tmp_dir = tempfile.mkdtemp(prefix="jeik_engine_")
             dns_args = DNSResolverConfig.build_chrome_args(dns)
             cmd = [
@@ -194,7 +203,9 @@ class ScrapeEngine:
                     options.formats,
                     options.only_main_content,
                     None,
-                    options.url
+                    options.url,
+                    options.include_sidebar,
+                    None
                 )
 
                 md = transformed.get("markdown", "")
@@ -234,6 +245,16 @@ class ScrapeEngine:
         should_close_tab = False
         t0 = time.time()
         try:
+            # 模式策略自适配 (--fast / --common / --complex)
+            from .models import FetchMode
+            if options.mode == FetchMode.COMMON:
+                options.headless = True
+            elif options.mode == FetchMode.COMPLEX:
+                options.headless = True
+                options.deep_explore = True
+                if options.waitFor < 3.5:
+                    options.waitFor = 3.5
+
             # 解析外部现有浏览器端点（若指定，则直接接入该运行中的浏览器实例）
             external_cdp = self._resolve_cdp_endpoint(options)
             cdp_base = external_cdp or f"http://127.0.0.1:{self.port}"
@@ -265,6 +286,7 @@ class ScrapeEngine:
             # Tier 2: 降级自愈升级至无头浏览器 / 连接现有运行中的浏览器实例
             if not external_cdp:
                 await self.ensure_started(dns=options.dns)
+                cdp_base = f"http://127.0.0.1:{self.port}"
 
             async with httpx.AsyncClient() as client:
                 # 连通性校验
@@ -495,9 +517,13 @@ class ScrapeEngine:
                     // 6. 展开常见折叠抽屉
                     document.querySelectorAll("details:not([open])").forEach(d => d.setAttribute("open", "true"));
 
+                    // 7. 捕获文档侧边栏导航容器
+                    const asideEl = document.querySelector("aside, .sidebar, [class*=\"sidebar\"], nav[class*=\"menu\"]");
+
                     return {
                         html: document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML,
-                        drawers: extractedDrawers.join("\n\n")
+                        drawers: extractedDrawers.join("\n\n"),
+                        sidebar: asideEl ? asideEl.outerHTML : ""
                     };
                 })()
                 """
@@ -506,6 +532,7 @@ class ScrapeEngine:
                 # 接收完整响应
                 raw_html = ""
                 drawers_text = ""
+                sidebar_html = ""
                 while True:
                     msg_str = await asyncio.wait_for(ws.recv(), timeout=options.timeout)
                     msg = json.loads(msg_str)
@@ -514,6 +541,7 @@ class ScrapeEngine:
                         if isinstance(val, dict):
                             raw_html = val.get("html", "")
                             drawers_text = val.get("drawers", "")
+                            sidebar_html = val.get("sidebar", "")
                         else:
                             raw_html = str(val)
                         break
@@ -527,7 +555,9 @@ class ScrapeEngine:
                 options.formats,
                 options.only_main_content,
                 drawers_text,
-                options.url
+                options.url,
+                options.include_sidebar,
+                sidebar_html
             )
 
             # 严格错误校验：如果提取出的 Markdown 与纯文本全为空，且 HTML 包含网络阻断错误

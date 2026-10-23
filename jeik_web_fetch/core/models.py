@@ -10,6 +10,11 @@ class OutputFormat(str, Enum):
     LINKS = "links"
     JSON = "json"
 
+class FetchMode(str, Enum):
+    FAST = "fast"       # 适合 GitHub、HTML、CSS、JS、MD 等静态网页快速抓取 (默认)
+    COMMON = "common"   # 适合非静态技术文档或 fast 抓不全的复杂文档 (嵌套JS、懒加载文档等)
+    COMPLEX = "complex" # 适合风控严格网站 (知乎、小红书等需防风控对抗或外部浏览器接管)
+
 class ScrapeOptions(BaseModel):
     url: str = Field(..., description="目标网页绝对 URL")
     formats: List[OutputFormat] = Field(default=[OutputFormat.MARKDOWN], description="输出格式列表")
@@ -52,6 +57,14 @@ class ScrapeOptions(BaseModel):
     headless: bool = Field(
         default=False,
         description="强制使用无头浏览器完整渲染，跳过快速 HTTP 探针（适用于包含客户端动态代码块或懒加载组件的页面）"
+    )
+    include_sidebar: bool = Field(
+        default=True,
+        description="自动提取文档站点的侧边栏目录与关联超链接列表"
+    )
+    mode: FetchMode = Field(
+        default=FetchMode.FAST,
+        description="抓取分类模式: 'fast' (默认, 静态极速探针), 'common' (复杂JS文档/无头渲染), 'complex' (高风控/深度防风控对抗)"
     )
 
 class ScrapeResult(BaseModel):

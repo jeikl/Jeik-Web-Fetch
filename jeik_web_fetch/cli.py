@@ -68,7 +68,7 @@ def safe_print(*args, **kwargs):
         kwargs_copy = dict(kwargs)
         print(sanitized, **kwargs_copy)
 
-from .core.models import ScrapeOptions, OutputFormat
+from .core.models import ScrapeOptions, OutputFormat, FetchMode
 from .core.engine import default_engine
 from .core.cookies import default_cookie_store
 from .api.routes import app
@@ -87,7 +87,9 @@ async def run_fetch(
     browser_port: int = None,
     attach_tab: bool = False,
     tab: str = None,
-    headless: bool = False
+    headless: bool = False,
+    include_sidebar: bool = True,
+    mode: FetchMode = FetchMode.FAST
 ):
     parsed_headers = {}
     if headers:
@@ -121,7 +123,9 @@ async def run_fetch(
             browser_port=browser_port,
             attach_tab=attach_tab,
             tab=tab,
-            headless=headless
+            headless=headless,
+            include_sidebar=include_sidebar,
+            mode=mode
         )
         result = await default_engine.scrape_url(options)
         await default_engine.stop()
@@ -158,7 +162,9 @@ async def run_fetch(
                 browser_port=browser_port,
                 attach_tab=attach_tab,
                 tab=tab,
-                headless=headless
+                headless=headless,
+                include_sidebar=include_sidebar,
+                mode=mode
             ) for u in urls
         ]
         results = await default_engine.scrape_urls_concurrent(options_list, max_workers=max_workers)
@@ -386,22 +392,76 @@ def run_open_command(sub_args):
     else:
         safe_print(f"[-] {msg}", file=sys.stderr)
 
-def main():
-    # 强制确保所有标准 I/O 为 UTF-8 编码
-    configure_utf8_io()
+def build_parser() -> argparse.ArgumentParser:
+    main_description = """Jeik CLI: High-Performance, Anti-Bot Web Scraper & Markdown Extraction Toolkit
 
-    # 启动后台自动更新探测器 (每10分钟自动检查一次，若有更新且当前空闲则无感平滑升级)
-    from .core.updater import updater
-    updater.start_background_daemon()
+Core Extraction Modes (三档核心模式):
+  --fast (Default)  Fast HTTP probe: best for GitHub, raw HTML/MD, static blogs
+  --common          Full headless browser: best for dynamic JS, Docusaurus, OpenAPI, MiMo, SPAs
+  --complex         Anti-bot confrontation: best for high-risk sites (Zhihu, Xiaohongshu, Cloudflare)
+
+Key Features (主要能力):
+  • Zero-config automatic rendering & SPA hydration (自动水合展开代码与目录)
+  • Full browser takeover via active tab (--active-tab / --tab)
+  • One-click browser login launcher (jeik open / jeik login)
+  • Persistent domain cookie store (jeik cookie set/list/delete)"""
+
+    main_epilog = """Quick Start Examples:
+  jeik fetch "https://github.com/..." --fast          # 极速秒抓静态仓库
+  jeik fetch "https://mimo.mi.com/docs/..." --common   # 抓取复杂文档与侧边栏超链接
+  jeik fetch "https://www.zhihu.com/..." --complex     # 强反爬模式抓取知乎
+  jeik open "https://xiaohongshu.com"                 # 弹窗扫码登录，随后运行 jeik fetch --active-tab
+  jeik fetch "url1" "url2" -j 4 --common              # 4 线程并发批量抓取"""
 
     parser = argparse.ArgumentParser(
         prog="jeik",
-        description="Jeik CLI: High-performance, anti-bot web scraper & markdown extraction toolkit"
+        description=main_description,
+        epilog=main_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
+    fetch_description = """Scrape any URL (intranet/internet/SPA/anti-bot) into high-fidelity structured Markdown.
+
+Core Modes (主要模式):
+  --fast               [Default] Fast HTTP probe (毫秒级探针: GitHub, HTML, MD, 静态页面)
+  --common             Full headless browser (无头渲染: 动态JS文档、Docusaurus、MiMo、嵌套代码块)
+  --complex            Anti-bot evasion (高风控对抗: 知乎、小红书、滑动验证、深度伪装探索)"""
+
+    fetch_epilog = """Most Important Parameters (最主要参数速查):
+  [Mode Selection (模式选择)]
+    --fast             Fast probe mode (default, ~200ms output for static sites)
+    --common           Full headless browser mode (essential for dynamic JS docs & full sidebar links)
+    --complex          Confrontation mode with deep evasion, smooth scrolling, and longer settle wait
+
+  [Performance & Concurrency (性能与并发)]
+    -j, --threads      Concurrency worker count for multi-URL batch tasks (default: 4)
+    -t, --timeout      Network timeout in seconds (default: 30.0s)
+    -w, --wait         Initial render buffer wait in seconds (default: 2.0s, increase for slow SPAs)
+    --dns              Custom DNS resolver (IP e.g. 8.8.8.8 or DoH e.g. https://1.1.1.1/dns-query)
+
+  [Authentication & Browser Takeover (登录态与浏览器接管)]
+    -c, --cookie       Inline raw cookie string ('session_id=...; token=...')
+    --cookie-file      Path to cookie file (Netscape cookies.txt or JSON)
+    --active-tab       Directly scrape user's currently open browser tab without opening a new tab
+    --tab <keyword>    Fuzzy match an open browser tab by title keyword, URL or index
+    --no-sidebar       Exclude document sidebar navigation links from final output
+
+Typical Command Combinations (推荐组合):
+  jeik fetch "https://github.com/torvalds/linux" --fast
+  jeik fetch "https://mimo.mi.com/docs/zh-CN/api/guidance/rate-limit" --common
+  jeik fetch "https://www.zhihu.com/question/123456" --complex
+  jeik fetch "url1" "url2" "url3" -j 4 --common
+  jeik fetch --active-tab"""
+
     # 1. jeik fetch <url> ...
-    fetch_parser = subparsers.add_parser("fetch", help="Scrape any URL (intranet/internet/SPA/anti-bot) into structured Markdown")
+    fetch_parser = subparsers.add_parser(
+        "fetch",
+        description=fetch_description,
+        epilog=fetch_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Scrape any URL (intranet/internet/SPA/anti-bot) into structured Markdown"
+    )
     fetch_parser.add_argument("urls", nargs="*", default=[], help="Target URL(s) to scrape (supports parallel multi-URL scraping)")
     fetch_parser.add_argument(
         "-j", "--threads",
@@ -479,6 +539,38 @@ def main():
         action="store_true",
         help="Force using headless browser for full JS rendering, skipping fast HTTP probe"
     )
+    fetch_parser.add_argument(
+        "--no-sidebar",
+        dest="include_sidebar",
+        action="store_false",
+        default=True,
+        help="Do not extract document sidebar navigation and links"
+    )
+
+    # 三档抓取模式分类 (缺省为 --fast)
+    mode_group = fetch_parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--fast",
+        dest="mode",
+        action="store_const",
+        const=FetchMode.FAST,
+        default=FetchMode.FAST,
+        help="[Default] Fast HTTP probe mode: best for GitHub, HTML, CSS, JS, Markdown and static pages"
+    )
+    mode_group.add_argument(
+        "--common",
+        dest="mode",
+        action="store_const",
+        const=FetchMode.COMMON,
+        help="Common headless browser mode: best for dynamic JS tech docs (DeepSeek, MiMo, Docusaurus), SPAs, and lazy-loading"
+    )
+    mode_group.add_argument(
+        "--complex",
+        dest="mode",
+        action="store_const",
+        const=FetchMode.COMPLEX,
+        help="Complex anti-bot confrontation mode: best for high-risk sites (Zhihu, Xiaohongshu, Cloudflare) with deep evasion"
+    )
 
     # 2. jeik tabs (非技术用户查看当前打开的标签页)
     tabs_parser = subparsers.add_parser("tabs", help="List all open tabs in running browser with friendly index and title")
@@ -529,6 +621,18 @@ def main():
     uninstall_parser = subparsers.add_parser("uninstall", help="One-click uninstall jeik-web-fetch from system")
     uninstall_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
+    return parser
+
+def main():
+    # 强制确保所有标准 I/O 为 UTF-8 编码
+    configure_utf8_io()
+
+    # 启动后台自动更新探测器 (每10分钟自动检查一次，若有更新且当前空闲则无感平滑升级)
+    from .core.updater import updater
+    updater.start_background_daemon()
+
+    parser = build_parser()
+
     # Shorthand: `jeik https://...` -> auto route to `fetch`
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in ["fetch", "tabs", "open", "login", "serve", "upgrade", "uninstall", "cookie", "browser", "help"]:
         sys.argv.insert(1, "fetch")
@@ -536,6 +640,10 @@ def main():
     args = parser.parse_args()
 
     if args.command == "fetch":
+        mode = args.mode or FetchMode.FAST
+        if getattr(args, "headless", False):
+            mode = FetchMode.COMMON
+
         asyncio.run(run_fetch(
             args.urls,
             dns=args.dns,
@@ -549,7 +657,9 @@ def main():
             browser_port=args.browser_port,
             attach_tab=args.attach_tab,
             tab=args.tab,
-            headless=args.headless
+            headless=args.headless,
+            include_sidebar=args.include_sidebar,
+            mode=mode
         ))
     elif args.command == "tabs":
         run_tabs_command(args)

@@ -42,13 +42,93 @@ class ContentTransformer:
         return links
 
     @classmethod
+    def extract_sidebar_navigation(cls, soup: BeautifulSoup, base_url: Optional[str] = None) -> str:
+        """
+        高保真提取文档系统（Docusaurus, Mintlify, VitePress, Nextra 等）的侧边栏菜单与超链接：
+        - 识别目录分组与接口列表；
+        - 将相对路径解析为完整的绝对 HTTP/HTTPS URL；
+        - 标准化 HTTP Method 标记 (POST / GET / PUT / DELETE)；
+        - 挂载为清晰严谨的 Markdown 目录导航。
+        """
+        aside = soup.find("aside") or soup.find(class_=lambda c: c and any(k in str(c).lower() for k in ["sidebar", "doc-sidebar", "menu__list", "docs-nav"]))
+        if not aside:
+            return ""
+
+        all_links = aside.find_all("a")
+        if len(all_links) < 2:
+            return ""
+
+        grouped_sections = []
+        seen_hrefs = set()
+
+        category_btns = aside.find_all(lambda el: el.name in ["button", "h3", "h4", "h5", "div"] and 0 < len(el.get_text().strip()) <= 20 and not el.find("a"))
+        valid_categories = []
+        for btn in category_btns:
+            btn_txt = btn.get_text().strip()
+            if btn_txt in ["Ctrl", "搜索文档", "搜索", "Search", ""]:
+                continue
+            p = btn.parent
+            while p and p != aside and len(p.find_all("a")) == 0:
+                p = p.parent
+            if p and len(p.find_all("a")) > 0:
+                valid_categories.append((btn_txt, p))
+
+        if valid_categories:
+            for cat_title, container in valid_categories:
+                cat_links = []
+                for a in container.find_all("a"):
+                    href = a.get("href", "").strip()
+                    if not href or href.startswith("javascript:"):
+                        continue
+                    full_href = urljoin(base_url, href) if base_url else href
+                    if full_href in seen_hrefs:
+                        continue
+                    seen_hrefs.add(full_href)
+                    txt = a.get_text().strip()
+                    txt = re.sub(r'^(POST|GET|PUT|DELETE|PATCH)([A-Za-z\u4e00-\u9fa5])', r'\1 \2', txt)
+                    cat_links.append((txt, full_href))
+                if cat_links:
+                    grouped_sections.append((cat_title, cat_links))
+
+        remaining_links = []
+        for a in all_links:
+            href = a.get("href", "").strip()
+            if not href or href.startswith("javascript:"):
+                continue
+            full_href = urljoin(base_url, href) if base_url else href
+            if full_href not in seen_hrefs:
+                seen_hrefs.add(full_href)
+                txt = a.get_text().strip()
+                txt = re.sub(r'^(POST|GET|PUT|DELETE|PATCH)([A-Za-z\u4e00-\u9fa5])', r'\1 \2', txt)
+                remaining_links.append((txt, full_href))
+
+        if not grouped_sections and not remaining_links:
+            return ""
+
+        md_lines = ["\n\n---\n\n## 📚 关联文档与目录导航 (Sidebar Links)\n"]
+        for cat_title, cat_links in grouped_sections:
+            md_lines.append(f"\n### {cat_title}\n")
+            for txt, href in cat_links:
+                md_lines.append(f"- [{txt}]({href})")
+
+        if remaining_links:
+            if grouped_sections:
+                md_lines.append("\n### 其他文档\n")
+            for txt, href in remaining_links:
+                md_lines.append(f"- [{txt}]({href})")
+
+        return "\n".join(md_lines)
+
+    @classmethod
     def transform(
         cls,
         raw_html: str,
         formats: List[OutputFormat],
         only_main_content: bool = True,
         drawers_text: Optional[str] = None,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        include_sidebar: bool = True,
+        sidebar_html: Optional[str] = None
     ) -> Dict[str, Any]:
         result = {}
 
@@ -61,6 +141,15 @@ class ContentTransformer:
 
         if OutputFormat.LINKS in formats:
             result["links"] = cls.extract_links(soup, base_url=base_url)
+
+        # 在清洗侧边栏/导航标签前，高保真提取文档站点的目录树与接口超链接
+        sidebar_md = ""
+        if include_sidebar:
+            if sidebar_html:
+                sb_soup = BeautifulSoup(sidebar_html, "html.parser")
+                sidebar_md = cls.extract_sidebar_navigation(sb_soup, base_url=base_url)
+            else:
+                sidebar_md = cls.extract_sidebar_navigation(soup, base_url=base_url)
 
         # 过滤噪音标签
         for tag in soup(["script", "style", "head", "noscript", "svg", "iframe"]):
@@ -173,6 +262,10 @@ class ContentTransformer:
                 clean_drawers = re.sub(r"[ \t]+", " ", drawers_text.strip())
                 clean_drawers = re.sub(r"\n\s*\n\s*\n+", "\n\n", clean_drawers)
                 md_text += f"\n\n---\n\n## 📋 附录：详细活动规则与细则（弹窗/抽屉完整提取）\n\n{clean_drawers}"
+
+            # 挂载文档目录与接口超链接导航
+            if sidebar_md:
+                md_text += f"\n\n{sidebar_md}"
 
             result["markdown"] = md_text.strip()
 
