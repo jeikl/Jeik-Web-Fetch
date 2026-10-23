@@ -68,7 +68,7 @@ class ContentTransformer:
             if not title_el:
                 title_el = cat.find(["a", "span", "div", "button"])
             cat_title = title_el.get_text().strip() if title_el else ""
-            if not cat_title or len(cat_title) > 30:
+            if not cat_title or len(cat_title) > 30 or any(bad in cat_title for bad in ["⌘K", "Ctrl", "搜索"]):
                 continue
 
             cat_links = []
@@ -187,7 +187,8 @@ class ContentTransformer:
         include_sidebar: bool = True,
         sidebar_html: Optional[str] = None,
         code_samples: Optional[List[Dict[str, str]]] = None,
-        pagination_html: Optional[str] = None
+        pagination_html: Optional[str] = None,
+        scenarios: Optional[List[Dict[str, str]]] = None
     ) -> Dict[str, Any]:
         result = {}
 
@@ -299,6 +300,13 @@ class ContentTransformer:
                 md_item = f"\n\n- `{prop}` *({type_name})*{badge}{desc_part}\n\n"
                 item.replace_with(work_soup.new_string(md_item))
 
+            # 格式化嵌套折叠参数项 (如火山引擎 Ark 等细节结构)
+            for collapse in work_soup.find_all(class_=lambda c: c and "doc-collapse" in str(c)):
+                summary = collapse.find("summary")
+                if summary:
+                    stxt = summary.get_text().strip()
+                    summary.replace_with(work_soup.new_string(f"\n\n- **{stxt}**\n\n"))
+
             # 3. 标题
             for i in range(6, 0, -1):
                 for h in work_soup.find_all(f"h{i}"):
@@ -339,8 +347,21 @@ class ContentTransformer:
             # 清除可能残留于文档末尾的孤立 Loading 占位符
             md_text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", md_text, flags=re.I)
             
-            # 多语言代码示例挂载
-            if code_samples:
+            # 场景与用例代码示例挂载 (基础调用、流式响应、函数调用等)
+            if scenarios:
+                sc_lines = ["\n\n---\n\n## 💻 场景与代码示例 (Code Samples & Scenarios)\n"]
+                for sc in scenarios:
+                    name = sc.get("scenario", "").strip()
+                    req = sc.get("requestCode", "").strip()
+                    res = sc.get("responseJson", "").strip()
+                    sc_lines.append(f"\n### 场景：{name}\n")
+                    if req:
+                        fence = "bash" if "curl" in req.lower() else ""
+                        sc_lines.append(f"\n#### 请求示例 (Request)\n\n```{fence}\n{req}\n```\n")
+                    if res:
+                        sc_lines.append(f"\n#### 响应示例 (Response)\n\n```json\n{res}\n```\n")
+                md_text += "\n".join(sc_lines)
+            elif code_samples:
                 code_lines = ["\n\n---\n\n## 💻 代码示例与多语言 SDK (Code Samples)\n"]
                 for s in code_samples:
                     lang = s.get("language", "cURL").strip()

@@ -439,21 +439,60 @@ class ScrapeEngine:
                         break
 
                 # 4. 深度交互探索 (若开启 deep_explore)
-                # 包含：步进平滑滚动结算价格、遍历所有 Tab、点击并采集所有隐藏活动规则/FAQ 抽屉
                 dom_extract_js = r"""
                 (async () => {
                     const extractedDrawers = [];
 
-                    // 1. 深度平滑步进滚动（触发 IntersectionObserver 异步询价与懒加载）
-                    const totalH = document.body.scrollHeight;
-                    for (let y = 0; y < totalH; y += 1200) {
-                        window.scrollTo(0, y);
-                        await new Promise(r => setTimeout(r, 60));
+                    // 1. 全容器平滑步进滚动（同时覆盖 window、main 以及所有内部滚动容器，彻底触发异步请求与懒加载）
+                    const scrollables = [
+                        window,
+                        ...Array.from(document.querySelectorAll("main, [class*='content'], [class*='container'], [class*='scroll'], .mdxContent"))
+                            .filter(el => el && el.scrollHeight > el.clientHeight + 100)
+                    ];
+                    for (const sc of scrollables) {
+                        const isWin = sc === window;
+                        const maxH = isWin ? document.body.scrollHeight : sc.scrollHeight;
+                        for (let y = 0; y < Math.min(maxH, 25000); y += 1200) {
+                            if (isWin) window.scrollTo(0, y);
+                            else sc.scrollTop = y;
+                            await new Promise(r => setTimeout(r, 40));
+                        }
+                        if (isWin) window.scrollTo(0, 0);
+                        else sc.scrollTop = 0;
                     }
-                    window.scrollTo(0, 0);
-                    await new Promise(r => setTimeout(r, 1000));
+                    await new Promise(r => setTimeout(r, 400));
 
-                    // 2. 扫描并点击【活动规则 / 细则 / FAQ / 须知】抽屉弹窗
+                    // 2. 递归多轮深度折叠展开 (Recursive Multi-pass Unfolding)
+                    // 彻底展开：原生 details、展开子属性、Body参数、响应参数、aria-expanded="false" 按钮
+                    for (let pass = 0; pass < 3; pass++) {
+                        document.querySelectorAll("details:not([open])").forEach(d => d.setAttribute("open", "true"));
+                        document.querySelectorAll("[aria-expanded='false']").forEach(btn => {
+                            try { btn.click(); } catch(e) {}
+                        });
+                        const toggles = Array.from(document.querySelectorAll("button, [role='button'], span, div, a")).filter(el => {
+                            const txt = (el.innerText || "").trim();
+                            return /^(展开|展开子属性|显示全部|更多|View more|Expand|Show more)$/i.test(txt) && el.children.length <= 1;
+                        });
+                        if (toggles.length === 0) break;
+                        for (const btn of toggles.slice(0, 50)) {
+                            try {
+                                btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            } catch(e) {}
+                        }
+                        await new Promise(r => setTimeout(r, 200));
+                    }
+
+                    // 3. 侧边栏折叠目录全量展开 (Sidebar Accordion Unfolding - Mintlify / Docusaurus / VitePress)
+                    const sidebarContainers = Array.from(document.querySelectorAll("aside, nav[class*='sticky'], [class*='sidebar'], [class*='docSidebar'], nav[aria-label*='sidebar' i]"));
+                    for (const sb of sidebarContainers) {
+                        const expandBtns = Array.from(sb.querySelectorAll("button, [role='button'], [aria-expanded='false']"));
+                        for (const b of expandBtns.slice(0, 30)) {
+                            try { b.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })); } catch(e) {}
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 200));
+
+                    // 4. 扫描并提取通用活动细则/规则抽屉 (抽屉探针)
                     const ruleLinks = Array.from(document.querySelectorAll("a, button, span")).filter(
                         e => e.innerText && /活动规则|详细细则|规则说明|使用须知/i.test(e.innerText.trim()) && e.innerText.trim().length <= 10
                     );
@@ -461,7 +500,7 @@ class ScrapeEngine:
                         const btn = ruleLinks[i];
                         try {
                             btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-                            await new Promise(r => setTimeout(r, 450));
+                            await new Promise(r => setTimeout(r, 350));
                             const drawer = document.querySelector(".next-drawer, [role=\"dialog\"], .next-dialog, .ant-modal, .ant-drawer");
                             if (drawer && drawer.innerText) {
                                 const txt = drawer.innerText.trim();
@@ -472,14 +511,56 @@ class ScrapeEngine:
                             const close = document.querySelector(".next-drawer-close, .next-dialog-close, [aria-label=\"Close\"], .ant-modal-close");
                             if (close) {
                                 close.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-                                await new Promise(r => setTimeout(r, 150));
+                                await new Promise(r => setTimeout(r, 100));
                             }
                         } catch(e) {}
                     }
 
-                    // 3. 多语言代码 Tab 遍历与全量采集 (cURL, Python, Go, Node.js, Java 等)
+                    // 4. 场景与用例选项卡全量捕获 (基础调用, 流式响应, 函数调用, 联网搜索, 图像输入, 深度思考, 结构化输出...)
+                    const scenarioNames = [
+                        "基础调用", "流式响应", "函数调用", "联网搜索", "图像输入", "音频输入", "视频输入",
+                        "深度思考", "结构化输出", "基础文本对话", "流式输出", "图片理解", "Function Calling"
+                    ];
+                    const scenarioTabs = Array.from(document.querySelectorAll("button, [role='tab'], span, div")).filter(el => {
+                        const txt = (el.innerText || "").trim();
+                        return scenarioNames.includes(txt) && el.children.length === 0;
+                    });
+                    const uniqueScenarios = [];
+                    const seenScenarioNames = new Set();
+                    for (const st of scenarioTabs) {
+                        const txt = st.innerText.trim();
+                        if (!seenScenarioNames.has(txt)) {
+                            seenScenarioNames.add(txt);
+                            uniqueScenarios.push({ name: txt, el: st });
+                        }
+                    }
+
+                    const harvestedScenarios = [];
+                    if (uniqueScenarios.length > 0) {
+                        for (const sc of uniqueScenarios.slice(0, 8)) {
+                            try {
+                                sc.el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                                await new Promise(r => setTimeout(r, 200));
+                            } catch(e) {}
+                            const pres = Array.from(document.querySelectorAll("pre")).map(p => p.innerText.trim()).filter(s => s.length > 10);
+                            const reqCode = pres.find(c => c.includes("curl") || c.includes("POST") || c.includes("GET") || c.includes("http")) || pres[0] || "";
+                            const resJson = pres.find(c => c !== reqCode && (c.startsWith("{") || c.startsWith("[") || c.includes("\"id\":") || c.includes("\"choices\":"))) || (pres.length > 1 ? pres[1] : "");
+                            harvestedScenarios.push({
+                                scenario: sc.name,
+                                requestCode: reqCode,
+                                responseJson: resJson
+                            });
+                        }
+                        // 重置回首个场景
+                        try {
+                            uniqueScenarios[0].el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await new Promise(r => setTimeout(r, 100));
+                        } catch(e) {}
+                    }
+
+                    // 5. 多语言代码 Tab 遍历与全量采集 (cURL, Python, Go, Node.js, Java 等)
                     const langCodeSamples = [];
-                    const codeTabs = Array.from(document.querySelectorAll("[role='tab'], .openapi-tabs__tab, .tabs__item")).filter(t => {
+                    const codeTabs = Array.from(document.querySelectorAll("[role='tab'], .openapi-tabs__tab, .tabs__item, button")).filter(t => {
                         const txt = (t.innerText || "").trim().toUpperCase();
                         return ["CURL", "PYTHON", "GO", "NODEJS", "JAVA", "PHP", "RUBY", "C#", "JAVASCRIPT", "TYPESCRIPT", "RUST", "BASH", "SHELL"].includes(txt);
                     });
@@ -502,7 +583,6 @@ class ScrapeEngine:
                             }
                         } catch(e) {}
                     }
-                    // 恢复点击第一个代码 tab (优先保证主流 cURL 留存当前视图)
                     if (codeTabs.length > 0) {
                         try {
                             codeTabs[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -510,18 +590,19 @@ class ScrapeEngine:
                         } catch(e) {}
                     }
 
-                    // 4. 遍历其他未激活的通用选项卡 (General Tab Switching)
-                    const otherTabs = Array.from(document.querySelectorAll("[role=\"tab\"], .next-tabs-tab, .ant-tabs-tab, .tab-item"))
-                        .filter(t => !codeTabs.includes(t));
-                    for (let i = 0; i < Math.min(otherTabs.length, 10); i++) {
-                        const t = otherTabs[i];
+                    // 6. 遍历对象分支与变体 Tab (OneOf / AnyOf: 如 Developer message, System message, User message...)
+                    const variantTabs = Array.from(document.querySelectorAll("button, [role='tab'], span")).filter(el => {
+                        const txt = (el.innerText || "").trim();
+                        return /^(Developer message|System message|User message|Assistant message|Tool message|Text content|Array of content parts)/i.test(txt) && el.children.length === 0;
+                    });
+                    for (const vt of variantTabs.slice(0, 10)) {
                         try {
-                            t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            vt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
                             await new Promise(r => setTimeout(r, 150));
                         } catch(e) {}
                     }
 
-                    // 5. Monaco Editor 内存模型还原 (杜绝长代码截断)
+                    // 7. Monaco Editor 内存模型还原 (杜绝长代码截断)
                     if (window.monaco && window.monaco.editor) {
                         const models = window.monaco.editor.getModels();
                         const editors = document.querySelectorAll(".monaco-editor");
@@ -537,7 +618,7 @@ class ScrapeEngine:
                         });
                     }
 
-                    // 6. CodeMirror 还原
+                    // 8. CodeMirror 还原
                     document.querySelectorAll(".CodeMirror").forEach(cm => {
                         if (cm.CodeMirror) {
                             const pre = document.createElement("pre");
@@ -548,22 +629,30 @@ class ScrapeEngine:
                         }
                     });
 
-                    // 7. 展开常见折叠抽屉与参数树
-                    document.querySelectorAll("details:not([open])").forEach(d => d.setAttribute("open", "true"));
+                    // 9. 通用侧边栏精确定位 (包含 Mintlify, Docusaurus, Ark, MiMo, VitePress 几何/类名双模探测)
+                    let asideEl = null;
+                    const asideCandidates = Array.from(document.querySelectorAll("aside, nav[class*='sticky'], [class*='sidebar'], [class*='docSidebar'], nav[aria-label*='sidebar' i], nav[class*='menu']"));
+                    asideEl = asideCandidates.find(el => el.querySelectorAll("a").length >= 2);
+                    if (!asideEl) {
+                        const leftNavs = Array.from(document.querySelectorAll("div, nav, section")).filter(el => {
+                            const rect = el.getBoundingClientRect();
+                            return rect.left < 80 && rect.top < 300 && rect.width > 120 && rect.width < 420 && el.querySelectorAll("a").length >= 3 && el.querySelectorAll("a").length < 300;
+                        });
+                        if (leftNavs.length > 0) {
+                            asideEl = leftNavs.sort((a, b) => b.querySelectorAll("a").length - a.querySelectorAll("a").length)[0];
+                        }
+                    }
 
-                    // 8. 捕获文档侧边栏导航容器 (精准筛选包含实质超链接的容器，避免命中无链接的 backdrop/遮罩)
-                    const asideCandidates = Array.from(document.querySelectorAll("aside, [class*='sidebar-container'], [class*='docSidebar'], nav[aria-label*='sidebar' i], nav[class*='menu']"));
-                    const asideEl = asideCandidates.find(el => el.querySelectorAll("a").length >= 2) || document.querySelector("aside");
-
-                    // 9. 捕获底部分页导航 (Previous / Next)
-                    const paginationEl = document.querySelector(".pagination-nav, nav[aria-label*='pagination' i], nav[aria-label*='Pages' i]");
+                    // 10. 捕获底部分页导航 (Previous / Next)
+                    const paginationEl = document.querySelector(".pagination-nav, nav[aria-label*='pagination' i], nav[aria-label*='Pages' i], [class*='pagination']");
 
                     return {
                         html: document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML,
                         drawers: extractedDrawers.join("\n\n"),
                         sidebar: asideEl ? asideEl.outerHTML : "",
                         pagination: paginationEl ? paginationEl.outerHTML : "",
-                        code_samples: langCodeSamples
+                        code_samples: langCodeSamples,
+                        scenarios: harvestedScenarios
                     };
                 })()
                 """
@@ -575,6 +664,7 @@ class ScrapeEngine:
                 sidebar_html = ""
                 pagination_html = ""
                 code_samples = []
+                scenarios = []
                 while True:
                     msg_str = await asyncio.wait_for(ws.recv(), timeout=options.timeout)
                     msg = json.loads(msg_str)
@@ -586,6 +676,7 @@ class ScrapeEngine:
                             sidebar_html = val.get("sidebar", "")
                             pagination_html = val.get("pagination", "")
                             code_samples = val.get("code_samples", [])
+                            scenarios = val.get("scenarios", [])
                         else:
                             raw_html = str(val)
                         break
@@ -603,7 +694,8 @@ class ScrapeEngine:
                 options.include_sidebar,
                 sidebar_html,
                 code_samples,
-                pagination_html
+                pagination_html,
+                scenarios
             )
 
             # 严格错误校验：如果提取出的 Markdown 与纯文本全为空，且 HTML 包含网络阻断错误
