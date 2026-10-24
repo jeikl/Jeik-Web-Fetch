@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-10-25
+
+### Added
+- **3 Dedicated Fetch Modes**:
+  - `--fast` *(Default)*: Sub-second static probe (<200ms) with zero browser overhead; automatically escalates to headless browser if an unhydrated client skeleton is detected.
+  - `--common`: Full headless Chromium execution for complex documentation, SPA rendering (React, Vue, Next.js, Nuxt), recursive folding expansion, and multi-scenario code harvesting.
+  - `--complex`: Advanced anti-bot stealth emulation (Cloudflare Turnstile/5s challenge, CAPTCHAs, DataDome), extended settling timeouts, smooth scrolling, and seamless takeover of authenticated active browser tabs (`jeik open` / `jeik fetch --active-tab`).
+- **Sidebar Navigation Tree with Absolute URL Resolution**: Automatically discovers documentation sidebar catalogs, groups, and HTTP methods (POST/GET/PUT/DELETE) for Docusaurus, Mintlify, VitePress, DingTalk, Ant Design Tree, and Ark, converting all relative paths to absolute URLs in structured appendices.
+- **Multi-Language & Multi-Scenario Code Preservation**: Automatically iterates and collects code snippets across scenario and language tabs (cURL, Python, Go, Node.js, Java) without overwriting.
+- **OpenAPI & Swagger Parameter Trees**: Formats API schema parameter lists into clean Markdown trees, preventing compressed single-line text collisions.
+- **Global Header & Contact Harvesting**: Extracts topbar navigation links, enterprise/technical support emails, GitHub, Discord, Twitter communities, and ICP/copyright footers.
+- **Partial SSR Unhydrated Component Quality Classifier**: Detects unhydrated client component fallbacks and automatically upgrades to headless browser, while stripping skeleton containers and orphan Loading... placeholder tags.
+- **Interactive Browser Takeover**: Added `jeik open <URL>` and `jeik fetch --active-tab` for effortless manual login and CAPTCHA resolution.
+- **Pure English Agent Skill Specification**: Converted `skill/SKILL.md` completely into pure English for agent tool discovery and execution.
+
+### Changed
+- **Precision Code Block Filtering**: Fixed Tailwind CSS color utility classes (`text-[var(--color-highlight)]`) being misidentified as Monaco code editors, eliminating pseudo-fenced blocks.
+- **Dynamic CDP Port Allocation**: Allocate dynamic debug ports to eliminate multi-process port collisions during concurrent runs.
+- **Self-Healing Sidebar Root Parsing**: Fixed boundary regression where pre-isolated sidebar root containers were discarded during child lookup.
+
+---
+
 ## [1.1.1] - 2026-09-27
 
 ### Fixed

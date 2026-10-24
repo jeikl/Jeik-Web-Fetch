@@ -12,7 +12,7 @@ from .storage.manager import StorageManager, default_storage
 from .api.routes import app
 from .fetcher import jeik_fetch, fetch, fetch_markdown
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 __all__ = [
     "OutputFormat",
     "ScrapeOptions",

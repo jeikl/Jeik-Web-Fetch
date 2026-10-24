@@ -13,40 +13,40 @@ jeik fetch "<URL>" [mode-flag] [options]
 
 ---
 
-## 🎯 3 Categorized Fetch Modes (三档抓取模式分类)
+## 🎯 3 Categorized Fetch Modes
 
-| 模式选项 | 适用场景与网页类型 | 运行机制与核心优势 | 示例命令 |
+| Mode Flag | Target Webpages & Scenarios | Underlying Mechanism & Key Advantages | Example Command |
 | :--- | :--- | :--- | :--- |
-| **`--fast`**<br>*(缺省 / Default)* | **静态网页与纯文本**<br>• GitHub 仓库、Issues、代码文件<br>• 纯 HTML 博客、维基百科<br>• CSS、JS、Markdown、JSON 等 Raw 文件 | **毫秒级极速探针直出**<br>无需拉起浏览器，零内存开销，200ms 内秒级输出结构化 Markdown。若遇骨架屏自动自愈升级。 | `jeik fetch "https://github.com/..."`<br>`jeik fetch "https://example.com" --fast` |
-| **`--common`** | **非静态技术文档与动态 JS 页面**<br>• 嵌套式 JS 技术文档（DeepSeek, MiMo, Docusaurus, Mintlify）<br>• SPA 客户端渲染（React / Vue / Next.js / Nuxt）<br>• 包含 Monaco / CodeMirror 编辑器、懒加载与展开抽屉的复杂技术手册 | **无头浏览器完整深度渲染**<br>跳过静态探针，直接唤起 Chromium 完整执行 JavaScript，等待组件水合并展开代码块，高保真提取正文与侧边栏目录超链接。 | `jeik fetch "https://mimo.mi.com/docs/..." --common`<br>`jeik fetch "https://api-docs.deepseek.com/..." --common` |
-| **`--complex`** | **高风控反爬与强交互网站**<br>• 风控极严站点（知乎、小红书、微信公众号、淘宝等）<br>• 遇到 Cloudflare 5秒盾、验证码拦截、需要登录态或复杂反爬检测的页面 | **深度反爬对抗与浏览器接管**<br>启用高级 Stealth 伪装、加大缓冲等待并执行平滑微操滚动；支持一键通过 `jeik open` 打开真实浏览器登录后直接无缝接管！ | `jeik fetch "https://www.zhihu.com/..." --complex`<br>`jeik open "<URL>"` 登录后执行 `jeik fetch --active-tab` |
+| **`--fast`**<br>*(Default)* | **Static Pages & Plain Text**<br>• GitHub repos, issues, code files<br>• Plain HTML blogs, Wikipedia<br>• Raw CSS, JS, Markdown, JSON files | **Sub-second HTTP Probe**<br>Direct fetch without launching a browser, zero memory overhead, returns structured Markdown in under 200ms. Automatically escalates to headless browser if an unhydrated skeleton is detected. | `jeik fetch "https://github.com/..."`<br>`jeik fetch "https://example.com" --fast` |
+| **`--common`** | **Dynamic Technical Docs & JS Pages**<br>• Modern JS documentation (DeepSeek, MiMo, Docusaurus, Mintlify)<br>• Client-side SPA (React, Vue, Next.js, Nuxt)<br>• Complex manuals with Monaco / CodeMirror editors, lazy loading, and expandable drawers | **Full Headless Browser Rendering**<br>Bypasses static probe, launches Chromium with JavaScript execution, waits for hydration, recursively expands folding sections, and extracts content along with sidebar navigation trees. | `jeik fetch "https://mimo.mi.com/docs/..." --common`<br>`jeik fetch "https://api-docs.deepseek.com/..." --common` |
+| **`--complex`** | **High Anti-Bot Risk & Interactive Sites**<br>• Heavily restricted sites (Zhihu, Xiaohongshu, WeChat, Taobao)<br>• Cloudflare Turnstile/5s challenge, CAPTCHAs, login walls, or complex fingerprinting | **Deep Anti-Bot Stealth & Browser Takeover**<br>Enables advanced stealth spoofing, extended settling timeouts, and smooth micro-scrolling. Supports one-click browser debugging via `jeik open` for manual login and seamless tab takeover. | `jeik fetch "https://www.zhihu.com/..." --complex`<br>`jeik open "<URL>"` -> Login -> `jeik fetch --active-tab` |
 
 ---
 
 ## 🚀 Usage Examples
 
-### 1. Fast Mode (Default) — 静态网页秒级抓取
+### 1. Fast Mode (Default) — Instant Static Page Scraping
 ```bash
-# 抓取 GitHub 仓库、文档或静态博客（缺省默认为 --fast）
+# Scrape GitHub repositories, documentation, or static blogs (default is --fast)
 jeik fetch "https://github.com/torvalds/linux"
 jeik fetch "https://raw.githubusercontent.com/user/repo/main/README.md" --fast
 ```
 
-### 2. Common Mode — 复杂/动态 JS 技术文档完整抓取
+### 2. Common Mode — Complete Dynamic JS & Tech Docs Extraction
 ```bash
-# 抓取嵌套式前端技术文档、Swagger/OpenAPI 文档、带侧边栏超链接与代码示例的 API 手册
+# Scrape nested technical documentation, Swagger/OpenAPI docs, API references with sidebar links and multi-language code snippets
 jeik fetch "https://mimo.mi.com/docs/zh-CN/api/guidance/rate-limit" --common
 jeik fetch "https://api-docs.deepseek.com/zh-cn/api/create-chat-completion" --common
 ```
 
-### 3. Complex Mode — 高风控对抗与登录接管抓取
+### 3. Complex Mode — Anti-Bot Evasion & Interactive Takeover
 ```bash
-# 抓取知乎、小红书等有严格反爬策略的站点
+# Scrape sites with strict anti-bot policies
 jeik fetch "https://www.zhihu.com/question/123456" --complex
 
-# 如果遇到登录墙或滑块验证码（1秒极简方案）：
-jeik open "https://www.xiaohongshu.com"   # 弹出已配置好调试通道的浏览器，用户正常浏览或扫码登录
-jeik fetch --active-tab                  # 瞬间直接接管并提取当前已登录的标签页！
+# If encountering a login wall or slider CAPTCHA (1-second seamless takeover):
+jeik open "https://www.xiaohongshu.com"   # Opens a browser with debugging port for manual browsing/login
+jeik fetch --active-tab                  # Immediately attaches to and extracts the active authenticated tab!
 ```
 
 ---
@@ -54,18 +54,18 @@ jeik fetch --active-tab                  # 瞬间直接接管并提取当前已�
 ## ⚙️ Advanced Options
 
 ```bash
-# 1. 多线程高并发批量抓取 (-j / --threads)
+# 1. High-concurrency multi-threaded batch scraping (-j / --threads)
 jeik fetch "url1" "url2" "url3" -j 4 --common
 
-# 2. 自定义 DNS 解析 (--dns，支持纯数字 IP 或 DoH 加密 DNS)
+# 2. Custom DNS resolution (--dns, supports numeric IPs or DNS-over-HTTPS)
 jeik fetch "<URL>" --dns "https://1.1.1.1/dns-query"
 
-# 3. 携带登录态 Cookies (--cookie / --cookie-file)
+# 3. Persistent authenticated cookies (--cookie / --cookie-file)
 jeik fetch "<URL>" --cookie "session_id=abc; token=123" --complex
-jeik cookie set zhihu.com "z_c0=..."     # 永久保存域名登录态，后续自动装载
+jeik cookie set zhihu.com "z_c0=..."     # Persist domain cookies across sessions
 
-# 4. 控制侧边栏目录提取 (--no-sidebar)
-jeik fetch "<URL>" --common --no-sidebar  # 仅提取正文主体，不挂载文末侧边栏链接列表
+# 4. Suppress sidebar navigation catalog (--no-sidebar)
+jeik fetch "<URL>" --common --no-sidebar  # Extract body content only, suppressing the trailing sidebar links appendix
 ```
 
 > Output begins with an absolute path anchor header where the full Markdown has been persisted safely to `.jeik/fetches/`.

@@ -6,6 +6,28 @@
 
 ---
 
+## [1.2.0] - 2026-10-25
+
+### 新增特性 (Added)
+- **全新三档抓取模式分类 (3 Dedicated Fetch Modes)**：
+  - `--fast` *(缺省 / Default)*：毫秒级极速静态探针直出（<200ms），零内存开销；若遇未水合的客户端 SPA 骨架屏自动自愈升级。
+  - `--common`：无头浏览器完整深度渲染，专为复杂文档与前端 SPA（React、Vue、Next.js、Nuxt）设计，递归展开折叠节点并采集多语言代码用例。
+  - `--complex`：深度反反爬对抗与浏览器接管，穿透 Cloudflare 5秒盾/Turnstile、验证码拦截与高风控风控检测，支持一键接管真实浏览器已登录标签页（`jeik open` / `jeik fetch --active-tab`）。
+- **文档侧边栏树与相对路径自动绝对化**：自动识别 Docusaurus、Mintlify、VitePress、钉钉文档、Ant Design Tree、Ark 等主流文档系统的左侧目录树与接口分类，标准化 HTTP Method 标记（POST/GET/PUT/DELETE），并将所有相对链接转换为完整的绝对 HTTP/HTTPS URL，挂载为文末结构化导航附录。
+- **多语言与多场景代码用例全量留存**：自动遍历并收集场景与语言选项卡（cURL、Python、Go、Node.js、Java）下的所有代码块与响应 JSON，杜绝后续 Tab 切换覆盖前序代码。
+- **OpenAPI / Swagger 参数列表树形排版**：智能解析 API 结构体与参数项，分离字段名、类型、约束与描述，彻底杜绝字段挤压在一行的格式缺陷。
+- **全站顶栏导航与商务/技术支持采集**：全面捕获顶栏超链接、企业支持邮箱、GitHub、Discord、Twitter 社区入口及备案版权信息。
+- **Partial SSR 未水合组件智能识别与过滤**：识别带有未水合动态占位符（如 Loading...）的页面，自动升级至无头浏览器以抓取完整客户端渲染内容，并自动清除骨架屏与孤立的 Loading 占位节点。
+- **无缝真实浏览器接管方案**：新增 `jeik open <URL>` 与 `jeik fetch --active-tab`，支持人工登录或完成滑块验证后 1 秒瞬间接管提取。
+- **全英文 Agent Skill 规范**：将 `skill/SKILL.md` 全量重构为地道规范的纯英文版本，提升 Agent 工具生态解析度。
+
+### 优化与修复 (Changed & Fixed)
+- **高精度代码块识别过滤**：修复 Tailwind CSS 样式类（`text-[var(--color-highlight)]`）被误判为 Monaco 代码编辑器的缺陷，彻底清除虚假空代码块。
+- **动态可用端口探测**：浏览器底层改为动态可用端口绑定，彻底杜绝多进程并发调用时的端口冲突。
+- **自愈侧边栏根容器解析**：修复外部传入完整侧边栏片段时因查询子节点失败导致导航丢失的边界 Bug。
+
+---
+
 ## [1.1.1] - 2026-09-27
 
 ### 修复与加固 (Fixed)
