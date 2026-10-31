@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] - 2026-10-31
+
+### Fixed
+- **Headless browser leak when the pool prewarm times out**: `ScrapeEngine.ensure_started()` polled the CDP endpoint with a fixed 40-attempt loop and, on timeout, raised `TimeoutError` **without killing the Chromium it had just spawned**. The ASGI lifespan never reached `stop()` (startup failed before `yield`), so the browser was reparented to PID 1 and stayed resident: one full headless Chromium (~389 MB PSS, 10 processes) leaked per failed start. Combined with `Restart=always` that turned into a leak every few seconds until the host ran out of memory.
+  - Readiness polling now uses a **wall-clock deadline** (`JEIK_BROWSER_START_TIMEOUT`, default 45s) instead of an attempt count. A refused connection returns instantly, so 40 attempts gave up after ~4s on loaded machines — long before snap / a cold-start Chromium could open the debugging port.
+  - Added `_reap_browser()`: kill + `wait()` (no zombies) + remove the temporary profile, invoked from **every** failure path and from `stop()`.
+  - The FastAPI lifespan now reaps the pool when prewarm fails, and always stops it through `try/finally`.
+  - The legacy `BrowserPool` in `fastapi_server.py` carried the same defect and received the same fix.
+  - Regression tests in `tests/test_browser_leak.py` reproduce the failure path with a fake browser that never opens the CDP port.
+
+---
+
 ## [1.2.0] - 2026-10-25
 
 ### Added

@@ -10,11 +10,19 @@ from ..core.engine import default_engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[*] 正在预热启动高性能 Chromium 常驻浏览器池...")
-    await default_engine.ensure_started()
+    try:
+        await default_engine.ensure_started()
+    except BaseException:
+        # lifespan 未 yield 时不会执行下方的 stop()；启动失败必须就地回收，
+        # 否则这一轮拉起的 Chromium 会变成孤儿进程常驻内存。
+        await default_engine.stop()
+        raise
     print("[+] 浏览器池就绪，可支持高并发无缝爬取！")
-    yield
-    print("[*] 正在关闭浏览器池...")
-    await default_engine.stop()
+    try:
+        yield
+    finally:
+        print("[*] 正在关闭浏览器池...")
+        await default_engine.stop()
 
 app = FastAPI(
     title="Jeik-Web-Fetch",

@@ -23,6 +23,24 @@ from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
 
+# CDP 就绪等待上限(秒)。必须按「墙钟」而不是「重试次数」计时：端口尚未监听时
+# httpx 会立即抛 ConnectError，固定 40 次循环在负载高的机器上 4 秒就会放弃，
+# 远不够 snap / 冷启动拉起一个 Chromium。
+DEFAULT_BROWSER_START_TIMEOUT_SECS = 45.0
+
+
+def _browser_start_timeout() -> float:
+    raw = os.environ.get("JEIK_BROWSER_START_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_BROWSER_START_TIMEOUT_SECS
+
+
 class ScrapeEngine:
     """
     Jeik-Web-Fetch 核心渲染引擎 (异步 I/O + CPU 密集型多线程混合架构)：
@@ -44,6 +62,9 @@ class ScrapeEngine:
         async with self._lock:
             if self.process and self.process.poll() is None:
                 return
+
+            # 上一轮若启动失败，可能残留未回收的进程与临时 profile，先清理干净。
+            self._reap_browser()
 
             self.bin_path = find_system_browser()
             if not self.bin_path:
@@ -80,24 +101,52 @@ class ScrapeEngine:
             ] + dns_args + ["about:blank"]
             self.process = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
 
-            async with httpx.AsyncClient() as client:
-                for _ in range(40):
-                    try:
-                        res = await client.get(f"http://127.0.0.1:{self.port}/json/version", timeout=0.5)
-                        if res.status_code == 200:
-                            return
-                    except Exception:
+            started = False
+            try:
+                deadline = time.monotonic() + _browser_start_timeout()
+                async with httpx.AsyncClient() as client:
+                    while time.monotonic() < deadline:
+                        try:
+                            res = await client.get(f"http://127.0.0.1:{self.port}/json/version", timeout=0.5)
+                            if res.status_code == 200:
+                                started = True
+                                return
+                        except Exception:
+                            pass
                         await asyncio.sleep(0.1)
+            finally:
+                # 关键修复：启动失败时浏览器是我们唯一 owner。此处不回收，进程就会
+                # 变成孤儿常驻(每次失败泄漏一个完整 Chromium，数百 MB)，而且外层
+                # supervisor 往往只能杀到本进程的 cgroup / 进程组，够不着它。
+                if not started:
+                    self._reap_browser()
             raise TimeoutError("Browser pool initialization timed out.")
+
+    def _reap_browser(self) -> None:
+        """
+        回收本引擎拉起的浏览器进程并删除其临时 profile。
+
+        必须在**所有**失败路径调用：`ensure_started` 抛出前、`stop()` 关闭时。
+        只 kill 不 wait 会留下僵尸进程，因此这里显式 reap。
+        """
+        process = self.process
+        self.process = None
+        if process is not None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
+        if self.tmp_dir:
+            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+            self.tmp_dir = None
 
     async def stop(self):
         async with self._lock:
-            if self.process:
-                self.process.kill()
-                self.process = None
-            if self.tmp_dir:
-                shutil.rmtree(self.tmp_dir, ignore_errors=True)
-                self.tmp_dir = None
+            self._reap_browser()
 
     def _resolve_cdp_endpoint(self, options: ScrapeOptions) -> Optional[str]:
         """

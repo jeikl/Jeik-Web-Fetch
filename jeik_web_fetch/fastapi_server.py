@@ -20,6 +20,9 @@ import websockets
 from .browser import find_system_browser
 from .converter import html_to_markdown
 
+# CDP 就绪等待上限(秒)，按墙钟计时而非重试次数。
+BROWSER_START_TIMEOUT_SECS = 45.0
+
 # ---------------------------------------------------------------------------
 # 并发浏览器实例池 (Browser Pool & Context Management)
 # ---------------------------------------------------------------------------
@@ -65,24 +68,45 @@ class BrowserPool:
         ]
         self.process = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
         
-        # 轮询探测 CDP 就绪
-        async with httpx.AsyncClient() as client:
-            for _ in range(40):
-                try:
-                    res = await client.get(f"http://127.0.0.1:{self.port}/json/version", timeout=0.5)
-                    if res.status_code == 200:
-                        return
-                except Exception:
+        # 轮询探测 CDP 就绪（按墙钟计时；连接被拒绝时 httpx 会立即返回，
+        # 固定次数循环在慢机器上几秒就会放弃）
+        started = False
+        try:
+            deadline = time.monotonic() + BROWSER_START_TIMEOUT_SECS
+            async with httpx.AsyncClient() as client:
+                while time.monotonic() < deadline:
+                    try:
+                        res = await client.get(f"http://127.0.0.1:{self.port}/json/version", timeout=0.5)
+                        if res.status_code == 200:
+                            started = True
+                            return
+                    except Exception:
+                        pass
                     await asyncio.sleep(0.1)
+        finally:
+            # 启动失败必须回收自己拉起的浏览器，否则每轮失败都泄漏一个常驻进程。
+            if not started:
+                self._reap()
         raise TimeoutError("Browser pool CDP initialization timed out.")
 
-    async def stop(self):
-        if self.process:
-            self.process.kill()
-            self.process = None
+    def _reap(self):
+        process = self.process
+        self.process = None
+        if process is not None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
         if self.tmp_dir:
             shutil.rmtree(self.tmp_dir, ignore_errors=True)
             self.tmp_dir = None
+
+    async def stop(self):
+        self._reap()
 
     async def scrape(self, url: str, wait_sec: float = 3.5, timeout: float = 25.0) -> str:
         """在常驻浏览器池中创建新 Tab、注入反爬特征、异步加载、提取 DOM 并转为 Markdown"""
