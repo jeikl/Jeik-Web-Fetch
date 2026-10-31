@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`jeik upgrade` failed behind proxies/TLS with an undiagnosable message**: `AutoUpdater.check_remote_version()` wrapped every failure in a bare `except Exception`, so certificate errors, DNS failures, proxy interception and rate limiting all surfaced as the same "Could not reach GitHub releases". The probe now records the real cause in `AutoUpdater.last_error` and prints it together with the endpoint and a proxy hint.
+  - TLS now verifies against the bundled `certifi` CA store: PyInstaller one-file builds on Windows often cannot locate the system roots and fail with `CERTIFICATE_VERIFY_FAILED`, while `httpx` (which bundles certifi) keeps working.
+  - Timeout raised from 8s to 20s (`JEIK_UPDATE_TIMEOUT`) with up to 3 attempts; `403/404/429` are not retried.
+  - Release asset selection now prefers the matching CPU architecture, so a Windows arm64 host no longer silently picks the x64 build.
+  - When the shell installer fails (it depends on `raw.githubusercontent.com`, frequently blocked), the direct release asset URL is printed as a fallback.
+  - Regression tests in `tests/test_updater_connectivity.py`.
+
+---
+
 ## [1.2.1] - 2026-10-31
 
 ### Fixed
