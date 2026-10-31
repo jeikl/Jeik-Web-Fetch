@@ -15,6 +15,11 @@ from pathlib import Path
 GITHUB_REPO = os.environ.get("JEIK_REPO", "jeikl/Jeik-Web-Fetch")
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
+# 不经过 API 的兜底通道：github.com 的 releases/latest 会 302 到 /releases/tag/<v>，
+# 而 releases/latest/download/<asset> 始终指向最新发行包 —— 两者都不吃 API 限流。
+RELEASE_LATEST_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+RELEASE_LATEST_DOWNLOAD = f"https://github.com/{GITHUB_REPO}/releases/latest/download"
+
 # GitHub API 超时与重试：默认 8s 在慢网络/代理环境里太短，失败一次就直接
 # 报“无法连接”，让人完全看不出是 TLS、限流还是 DNS 问题。
 GITHUB_API_TIMEOUT_SECS = float(os.environ.get("JEIK_UPDATE_TIMEOUT", "20"))
@@ -34,6 +39,23 @@ def _ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context(cafile=certifi.where())
     except Exception:
         return ssl.create_default_context()
+
+
+def _api_headers() -> dict:
+    """
+    GitHub API 请求头。
+
+    匿名请求只有 60 次/小时（按出口 IP 计），共享 IP/办公室网络几下就耗尽并返回
+    403；带上 token 则抬到 5000 次/小时。任选 GITHUB_TOKEN 或 GH_TOKEN。
+    """
+    headers = {
+        "User-Agent": "jeik-web-fetch-updater",
+        "Accept": "application/vnd.github+json",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 class AutoUpdater:
@@ -111,15 +133,82 @@ class AutoUpdater:
 
         return exact or loose
 
+    @staticmethod
+    def _describe_http_error(exc: urllib.error.HTTPError) -> str:
+        """把 HTTPError 翻译成一句能直接指导用户的话（限流会带上重置时间）。"""
+        reason = f"HTTP {exc.code} {exc.reason}"
+        headers = getattr(exc, "headers", None)
+        if headers is not None:
+            remaining = headers.get("x-ratelimit-remaining")
+            reset = headers.get("x-ratelimit-reset")
+            if remaining == "0" and reset and str(reset).isdigit():
+                when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(reset)))
+                reason += f" (API rate limit exhausted, resets at {when})"
+            retry_after = headers.get("retry-after")
+            if retry_after:
+                reason += f" (retry-after {retry_after}s)"
+        try:
+            body = exc.read().decode("utf-8", "replace").strip()
+        except Exception:
+            body = ""
+        if body:
+            try:
+                message = json.loads(body).get("message")
+            except Exception:
+                message = body[:200]
+            if message:
+                reason += f": {message}"
+        return reason
+
+    @classmethod
+    def _fallback_asset_name(cls, plat: str, arch: str) -> str:
+        if plat.startswith("win"):
+            return f"jeik-web-fetch-windows-{arch}.exe"
+        if plat.startswith("darwin"):
+            return f"jeik-web-fetch-darwin-{arch}"
+        return f"jeik-web-fetch-linux-{arch}"
+
+    @classmethod
+    def _check_via_release_page(cls) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        完全不经过 GitHub API 的兜底探测。
+
+        `https://github.com/<repo>/releases/latest` 会 302 到 `/releases/tag/<v>`，
+        读最终 URL 即可拿到版本号；发行包用 `releases/latest/download/<asset>` 直链，
+        始终指向最新一版。这条路不受匿名 API 60 次/小时的限流影响。
+        """
+        import platform
+
+        arch = "arm64" if "arm" in platform.machine().lower() or "aarch" in platform.machine().lower() else "x64"
+        try:
+            request = urllib.request.Request(
+                RELEASE_LATEST_PAGE,
+                headers={"User-Agent": "jeik-web-fetch-updater", "Accept": "text/html"},
+                method="HEAD",
+            )
+            with urllib.request.urlopen(
+                request, timeout=GITHUB_API_TIMEOUT_SECS, context=_ssl_context()
+            ) as response:
+                final_url = response.geturl()
+        except Exception as exc:
+            return None, None, f"{type(exc).__name__}: {exc}"
+
+        match = re.search(r"/releases/tag/([^/?#]+)", final_url or "")
+        if not match:
+            return None, None, f"unexpected redirect target: {final_url}"
+
+        version = match.group(1).lstrip("v")
+        asset = f"{RELEASE_LATEST_DOWNLOAD}/{cls._fallback_asset_name(sys.platform, arch)}"
+        return version, asset, None
+
     @classmethod
     def check_remote_version(cls) -> Tuple[Optional[str], Optional[str]]:
         """
         Query GitHub for the latest release version and download URL.
         Returns: (remote_version, download_url)
 
-        失败时返回 (None, None)，并把真实原因写进 `AutoUpdater.last_error`：
-        调用方据此可以告诉用户到底是 TLS、限流还是 DNS 问题，而不是一句笼统的
-        "无法连接 GitHub"。
+        先走 API；API 被限流/拦截时自动退到不依赖 API 的 releases 页面通道。
+        两者都失败时，把真实原因写进 `AutoUpdater.last_error`。
         """
         cls.last_error = None
         import platform
@@ -130,13 +219,7 @@ class AutoUpdater:
         last_reason: Optional[str] = None
         for attempt in range(1, GITHUB_API_RETRIES + 1):
             try:
-                request = urllib.request.Request(
-                    LATEST_RELEASE_API,
-                    headers={
-                        "User-Agent": "jeik-web-fetch-updater",
-                        "Accept": "application/vnd.github+json",
-                    },
-                )
+                request = urllib.request.Request(LATEST_RELEASE_API, headers=_api_headers())
                 with urllib.request.urlopen(
                     request, timeout=GITHUB_API_TIMEOUT_SECS, context=_ssl_context()
                 ) as response:
@@ -146,11 +229,11 @@ class AutoUpdater:
                         data = json.loads(response.read().decode("utf-8"))
                         tag_name = str(data.get("tag_name", "")).lstrip("v")
                         if not tag_name:
-                            cls.last_error = "release response has no tag_name"
-                            return None, None
+                            last_reason = "release response has no tag_name"
+                            break
                         return tag_name, cls._pick_asset(data.get("assets", []), plat, arch)
             except urllib.error.HTTPError as exc:
-                last_reason = f"HTTP {exc.code} {exc.reason}"
+                last_reason = cls._describe_http_error(exc)
                 # 403/429 是限流或拒绝，重试没有意义
                 if exc.code in (403, 404, 429):
                     break
@@ -160,7 +243,15 @@ class AutoUpdater:
             if attempt < GITHUB_API_RETRIES:
                 time.sleep(1.5 * attempt)
 
-        cls.last_error = last_reason or "unknown error"
+        api_reason = last_reason or "unknown error"
+
+        # API 被限流（典型：匿名 60 次/小时耗尽 → 403）时，走不依赖 API 的页面通道
+        version, asset, fallback_reason = cls._check_via_release_page()
+        if version:
+            cls.last_error = None
+            return version, asset
+
+        cls.last_error = f"{api_reason}; fallback: {fallback_reason or 'unknown error'}"
         return None, None
 
     @classmethod

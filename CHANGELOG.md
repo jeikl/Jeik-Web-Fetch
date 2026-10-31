@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **`jeik upgrade` failed behind proxies/TLS with an undiagnosable message**: `AutoUpdater.check_remote_version()` wrapped every failure in a bare `except Exception`, so certificate errors, DNS failures, proxy interception and rate limiting all surfaced as the same "Could not reach GitHub releases". The probe now records the real cause in `AutoUpdater.last_error` and prints it together with the endpoint and a proxy hint.
+- **`jeik upgrade` failed with "Could not reach GitHub releases" on Windows**: two independent defects.
+  - **GitHub API rate limiting (403)**: `check_remote_version()` swallowed every failure in a bare `except Exception`, so an exhausted anonymous quota (60 req/h per egress IP), a TLS error, a DNS failure and a captive proxy all produced the same message. The probe now records the real cause in `AutoUpdater.last_error` (including the quota reset time) and prints it with the endpoint and a proxy hint. When the API is rate limited it **falls back to `github.com/<repo>/releases/latest`**, whose redirect reveals the version without touching the API, so `jeik upgrade` keeps working. `GITHUB_TOKEN`/`GH_TOKEN` are honoured to raise the quota to 5000/h.
+  - **Self-replace of the running `jeik.exe` (Windows file lock)**: `scripts/install.ps1` streamed the download straight onto `$TargetExe`, which Windows refuses with *"The process cannot access the file ... because it is being used by another process"*. It now stages to `jeik.exe.new`, stops only the `serve` daemon (never the CLI performing the upgrade), then swaps by renaming the locked binary and moves the new one into place.
   - TLS now verifies against the bundled `certifi` CA store: PyInstaller one-file builds on Windows often cannot locate the system roots and fail with `CERTIFICATE_VERIFY_FAILED`, while `httpx` (which bundles certifi) keeps working.
-  - Timeout raised from 8s to 20s (`JEIK_UPDATE_TIMEOUT`) with up to 3 attempts; `403/404/429` are not retried.
+  - Timeout raised from 8s to 20s (`JEIK_UPDATE_TIMEOUT`) with up to 3 attempts; `403/404/429` are terminal and not retried.
   - Release asset selection now prefers the matching CPU architecture, so a Windows arm64 host no longer silently picks the x64 build.
-  - When the shell installer fails (it depends on `raw.githubusercontent.com`, frequently blocked), the direct release asset URL is printed as a fallback.
+  - When the shell installer fails, the direct release asset URL is printed as a fallback.
   - Regression tests in `tests/test_updater_connectivity.py`.
 
 ---

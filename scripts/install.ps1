@@ -49,7 +49,34 @@ $TargetExe = Join-Path $TargetDir "jeik.exe"
 
 Write-Host $MsgDownload -ForegroundColor Yellow
 Write-Host "    URL: $DownloadUrl"
-Invoke-WebRequest -Uri $DownloadUrl -OutFile $TargetExe -UseBasicParsing
+
+# 关键：Windows 会锁住正在运行的 exe，直接 OutFile 到 $TargetExe 必然报
+# "The process cannot access the file ... because it is being used by another process"。
+# 因此先下载到 .new，再停掉后台 serve，最后用「重命名旧文件 → 移入新文件」完成替换
+# （Windows 允许重命名正在运行的 exe，只是不允许覆盖它）。
+$StagedExe = "$TargetExe.new"
+$BackupExe = "$TargetExe.old"
+foreach ($stale in @($StagedExe, $BackupExe)) {
+    if (Test-Path $stale) { Remove-Item $stale -Force -ErrorAction SilentlyContinue }
+}
+Invoke-WebRequest -Uri $DownloadUrl -OutFile $StagedExe -UseBasicParsing
+
+# 只停后台常驻服务，绝不能误杀正在执行本次升级的 CLI 进程
+Get-CimInstance Win32_Process -Filter "Name='jeik.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'serve' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Milliseconds 300
+
+try {
+    Move-Item -Path $StagedExe -Destination $TargetExe -Force -ErrorAction Stop
+} catch {
+    # 目标仍被占用（例如还有另一个 jeik 在用）：先把它改名腾位
+    if (Test-Path $TargetExe) {
+        Rename-Item -Path $TargetExe -NewName (Split-Path $BackupExe -Leaf) -Force -ErrorAction SilentlyContinue
+    }
+    Move-Item -Path $StagedExe -Destination $TargetExe -Force
+}
+Remove-Item $BackupExe -Force -ErrorAction SilentlyContinue
 
 # 2. 将 .jeik\bin 添加到用户环境变量 PATH (如果尚未添加)
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -96,9 +123,10 @@ $AppArgs = "`"$TargetExe`" serve --port $ServicePort"
 Set-ItemProperty -Path $RunKey -Name "JeikWebFetchDaemon" -Value $AppArgs
 Write-Host ($MsgDaemonReg -f $ServicePort) -ForegroundColor Green
 
-# 5. 如果当前尚未在后台运行，立即静默拉起后台常驻服务
-$existing = Get-Process jeik -ErrorAction SilentlyContinue
-if (-not $existing) {
+# 5. 确保后台常驻服务在运行（二进制刚被替换时，上面的循环已把它停掉）
+$serveRunning = Get-CimInstance Win32_Process -Filter "Name='jeik.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'serve' }
+if (-not $serveRunning) {
     Start-Process -FilePath $TargetExe -ArgumentList "serve --port $ServicePort" -WindowStyle Hidden
     Write-Host $MsgDaemonStart -ForegroundColor Green
 }
