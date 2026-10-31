@@ -6,6 +6,18 @@
 
 ---
 
+## [1.2.1] - 2026-10-31
+
+### 修复 (Fixed)
+- **浏览器池预热超时导致的无头浏览器泄漏**：`ScrapeEngine.ensure_started()` 原本用固定 40 次轮询等待 CDP 就绪，超时后直接抛出 `TimeoutError`，**却没有杀掉自己刚拉起的 Chromium**。由于 ASGI lifespan 在 `yield` 之前就启动失败，`stop()` 永远不会执行，浏览器被 reparent 到 PID 1 后常驻内存：每次启动失败泄漏一个完整无头浏览器（实测单实例 PSS ≈ 389MB、10 个进程）。叠加 `Restart=always` 后变成每几秒泄漏一个，最终耗尽整机内存。
+  - 就绪轮询改为**墙钟截止时间**（`JEIK_BROWSER_START_TIMEOUT`，默认 45 秒）。连接被拒绝时 httpx 会立即返回，旧逻辑在负载高的机器上 4 秒就放弃，远早于 snap / 冷启动 Chromium 打开调试端口的时机。
+  - 新增 `_reap_browser()`：kill + `wait()`（不留僵尸进程）+ 删除临时 profile，并在**所有失败路径**与 `stop()` 中调用。
+  - FastAPI lifespan 在预热失败时先回收浏览器池，正常关闭则通过 `try/finally` 保证一定执行。
+  - 历史遗留的 `fastapi_server.py` 中的 `BrowserPool` 存在完全相同的缺陷，已一并修复。
+  - 新增 `tests/test_browser_leak.py` 回归测试，用“永不打开 CDP 端口的假浏览器”复现该失败路径。
+
+---
+
 ## [1.2.0] - 2026-10-25
 
 ### 新增特性 (Added)
