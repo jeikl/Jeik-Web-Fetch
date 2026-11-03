@@ -415,31 +415,21 @@ class ScrapeEngine:
 
     async def _resolve_daemon_endpoint(self) -> Optional[str]:
         """
-        如果本机 `jeik serve` 正在运行，复用它的常驻浏览器。
+        复用（必要时自动拉起）后台 `jeik serve` 的常驻浏览器。
 
-        CLI 每次调用都是独立进程，进程内无法复用；但守护进程本来就长期持有
-        一个 Chromium。直接接到它的 CDP 端点上，新 tab 用完即关，就完全不需要
-        再创建一份 131MB 的临时 profile —— 既不会累积，也省掉每次的写盘+删除。
+        CLI 每次调用都是独立进程，进程内无法复用；但守护进程本来就长期持有一个
+        Chromium。接到它的 CDP 端点上，新 tab 用完即关，就完全不需要再创建一份
+        131MB 的临时 profile —— 既不会累积，也省掉每次的写盘+删除。
+
+        没有在跑的守护进程时，`daemon_client` 会自动以分离进程拉起一个（空闲
+        自动退出），所以用户不需要手动 `jeik serve`。
         """
-        if os.environ.get("JEIK_NO_DAEMON_REUSE") == "1":
-            return None
+        from .daemon_client import resolve_endpoint
 
-        base = os.environ.get("JEIK_DAEMON_URL", "http://127.0.0.1:8863").rstrip("/")
         try:
-            async with httpx.AsyncClient() as client:
-                health = await client.get(f"{base}/health", timeout=0.6)
-                if health.status_code != 200:
-                    return None
-                pool_port = health.json().get("pool_port")
-                if not pool_port:
-                    return None
-                endpoint = f"http://127.0.0.1:{int(pool_port)}"
-                probe = await client.get(f"{endpoint}/json/version", timeout=0.6)
-                if probe.status_code == 200:
-                    return endpoint
+            return await resolve_endpoint()
         except Exception:
             return None
-        return None
 
     def _resolve_cookies_and_headers(
         self, options: ScrapeOptions

@@ -169,7 +169,7 @@ After=network.target
 [Service]
 Type=simple
 User=${USER}
-ExecStart=${INSTALL_DIR}/jeik serve --port ${SERVICE_PORT}
+ExecStart=${INSTALL_DIR}/jeik serve --host 127.0.0.1 --port ${SERVICE_PORT}
 Restart=always
 RestartSec=5
 Environment=PORT=${SERVICE_PORT}
@@ -195,6 +195,8 @@ elif [ "$PLATFORM" = "darwin" ]; then
     <array>
         <string>${INSTALL_DIR}/jeik</string>
         <string>serve</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
         <string>--port</string>
         <string>${SERVICE_PORT}</string>
     </array>

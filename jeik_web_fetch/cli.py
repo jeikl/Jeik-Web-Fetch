@@ -611,8 +611,25 @@ Typical Command Combinations (推荐组合):
 
     # 4. jeik serve [--port 8863]
     serve_parser = subparsers.add_parser("serve", help="Start high-concurrency FastAPI HTTP server")
-    serve_parser.add_argument("--host", default="0.0.0.0", help="Host address to bind (default: 0.0.0.0)")
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host address to bind (default: 127.0.0.1 — loopback only). The daemon has no "
+             "authentication, so binding it to a public interface requires --allow-public.",
+    )
+    serve_parser.add_argument(
+        "--allow-public",
+        action="store_true",
+        help="Permit binding the unauthenticated daemon to a non-loopback host.",
+    )
     serve_parser.add_argument("-p", "--port", type=int, default=8863, help="Listening port (default: 8863)")
+    serve_parser.add_argument(
+        "--idle-exit",
+        type=int,
+        default=int(os.environ.get("JEIK_SERVE_IDLE_EXIT", "0")),
+        help="Exit automatically after N seconds of inactivity (0 = never). "
+             "Used by daemons that `jeik fetch` auto-spawns.",
+    )
 
     # 5. jeik upgrade
     subparsers.add_parser("upgrade", help="Check and upgrade jeik to the latest release version, then restart")
@@ -622,6 +639,32 @@ Typical Command Combinations (推荐组合):
     uninstall_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
     return parser
+
+
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def guard_bind_host(host: str, allow_public: bool) -> None:
+    """
+    守护进程没有任何鉴权：默认只允许绑回环地址，避免被当成公网开放代理。
+
+    需要局域网/公网访问时必须显式 `--allow-public`，并自行在反向代理层加鉴权。
+    """
+    if allow_public:
+        return
+    normalized = (host or "").strip().strip("[]").lower()
+    if normalized in LOOPBACK_HOSTS or normalized.startswith("127."):
+        return
+    safe_print(
+        f"[-] 拒绝绑定到非回环地址 {host}：jeik serve 没有鉴权，暴露到公网等于开放性代理。",
+        file=sys.stderr,
+    )
+    safe_print(
+        "    如确需局域网/公网访问，请显式追加 --allow-public，并在反向代理层自行添加鉴权。",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 
 def main():
     # 强制确保所有标准 I/O 为 UTF-8 编码
@@ -670,6 +713,10 @@ def main():
     elif args.command == "browser":
         run_browser_command(args)
     elif args.command == "serve":
+        guard_bind_host(args.host, getattr(args, "allow_public", False))
+        idle_exit = getattr(args, "idle_exit", 0) or 0
+        if idle_exit > 0:
+            os.environ["JEIK_SERVE_IDLE_EXIT"] = str(idle_exit)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
     elif args.command == "upgrade":
         run_upgrade()

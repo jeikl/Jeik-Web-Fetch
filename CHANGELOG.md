@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The daemon now binds to loopback by default**: `jeik serve --host` defaults to `127.0.0.1` instead of `0.0.0.0`. The service has no authentication, so the old default exposed an open scraping proxy — and its CDP port through `/health` — to anyone who could reach the machine. Binding to a non-loopback interface now requires an explicit `--allow-public`, both installers (`scripts/install.sh`, `scripts/install.ps1`) pass `--host 127.0.0.1`, and CORS is limited to localhost origins so a random website can no longer drive the local browser.
+- **`jeik fetch` reuses an auto-spawned daemon**: instead of requiring a manually started `jeik serve`, the CLI probes `127.0.0.1:8863` and, when nothing is listening, spawns a detached daemon with `--idle-exit 300` (it exits by itself once idle). Only loopback endpoints are ever accepted; `JEIK_NO_DAEMON_REUSE=1` disables reuse and `JEIK_NO_AUTO_DAEMON=1` disables auto-spawn.
+
 ### Fixed
 - **Temp Chromium profiles were never reclaimed (`%TEMP%\jeik_engine_*`, ~131 MB each)**: every headless run creates a full browser profile, but the only cleanup was `shutil.rmtree(..., ignore_errors=True)` inside `stop()`. Two paths leaked it permanently — the process being killed (tool timeout / Ctrl-C / OOM), and on Windows `rmtree` silently failing while Chromium child processes still held file handles. 130+ accumulated profiles had consumed ~18 GB.
   - Each profile now carries a `<dir>.owner` PID marker, and `sweep_stale_profiles()` reclaims any profile whose owner process is gone. A profile without a marker (created by an older build) is only removed once it is more than an hour old, so a concurrently running fetch is never touched.

@@ -119,7 +119,7 @@ Write-Host ($MsgSkill -f $UniversalSkillDir) -ForegroundColor Green
 
 # 4. 配置 Windows 登录自动常驻服务 (通过注册表 Run 键)
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$AppArgs = "`"$TargetExe`" serve --port $ServicePort"
+$AppArgs = "`"$TargetExe`" serve --host 127.0.0.1 --port $ServicePort"
 Set-ItemProperty -Path $RunKey -Name "JeikWebFetchDaemon" -Value $AppArgs
 Write-Host ($MsgDaemonReg -f $ServicePort) -ForegroundColor Green
 
@@ -127,7 +127,7 @@ Write-Host ($MsgDaemonReg -f $ServicePort) -ForegroundColor Green
 $serveRunning = Get-CimInstance Win32_Process -Filter "Name='jeik.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match 'serve' }
 if (-not $serveRunning) {
-    Start-Process -FilePath $TargetExe -ArgumentList "serve --port $ServicePort" -WindowStyle Hidden
+    Start-Process -FilePath $TargetExe -ArgumentList "serve --host 127.0.0.1 --port $ServicePort" -WindowStyle Hidden
     Write-Host $MsgDaemonStart -ForegroundColor Green
 }
 
