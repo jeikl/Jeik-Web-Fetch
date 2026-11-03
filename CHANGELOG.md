@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Temp Chromium profiles were never reclaimed (`%TEMP%\jeik_engine_*`, ~131 MB each)**: every headless run creates a full browser profile, but the only cleanup was `shutil.rmtree(..., ignore_errors=True)` inside `stop()`. Two paths leaked it permanently — the process being killed (tool timeout / Ctrl-C / OOM), and on Windows `rmtree` silently failing while Chromium child processes still held file handles. 130+ accumulated profiles had consumed ~18 GB.
+  - Each profile now carries a `<dir>.owner` PID marker, and `sweep_stale_profiles()` reclaims any profile whose owner process is gone. A profile without a marker (created by an older build) is only removed once it is more than an hour old, so a concurrently running fetch is never touched.
+  - The sweep runs on every `ensure_started`, so leftovers are reclaimed by the next fetch or daemon start.
+  - `_remove_tree()` retries with backoff instead of swallowing the failure, and the whole browser tree is killed (`taskkill /T /F` on Windows) before deletion.
+  - An `atexit` hook reaps still-live profiles on `sys.exit` and uncaught exceptions.
+  - The same retry logic was applied to the legacy `BrowserPool` in `fastapi_server.py`.
+  - Regression tests in `tests/test_profile_cleanup.py`.
 - **`jeik upgrade` failed with "Could not reach GitHub releases" on Windows**: two independent defects.
   - **GitHub API rate limiting (403)**: `check_remote_version()` swallowed every failure in a bare `except Exception`, so an exhausted anonymous quota (60 req/h per egress IP), a TLS error, a DNS failure and a captive proxy all produced the same message. The probe now records the real cause in `AutoUpdater.last_error` (including the quota reset time) and prints it with the endpoint and a proxy hint. When the API is rate limited it **falls back to `github.com/<repo>/releases/latest`**, whose redirect reveals the version without touching the API, so `jeik upgrade` keeps working. `GITHUB_TOKEN`/`GH_TOKEN` are honoured to raise the quota to 5000/h.
   - **Self-replace of the running `jeik.exe` (Windows file lock)**: `scripts/install.ps1` streamed the download straight onto `$TargetExe`, which Windows refuses with *"The process cannot access the file ... because it is being used by another process"*. It now stages to `jeik.exe.new`, stops only the `serve` daemon (never the CLI performing the upgrade), then swaps by renaming the locked binary and moves the new one into place.

@@ -2,10 +2,12 @@ import os
 import sys
 import time
 import json
+import atexit
 import base64
 import asyncio
 import tempfile
 import shutil
+import threading
 import subprocess
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +41,185 @@ def _browser_start_timeout() -> float:
         except (TypeError, ValueError):
             pass
     return DEFAULT_BROWSER_START_TIMEOUT_SECS
+
+
+# ---------------------------------------------------------------------------
+# 临时 profile 生命周期：创建 → owner 标记 → 回收 → 遗留清扫
+#
+# 历史问题：每次抓取都会 mkdtemp 一个完整 Chromium profile（Windows 上约
+# 131MB）。正常退出会删除，但下面两种情况会留下永不清理的目录：
+#   1. 进程被强杀（工具超时 / Ctrl-C / OOM）；
+#   2. Windows 上 `shutil.rmtree(ignore_errors=True)` 在 Chrome 子进程还没
+#      释放文件句柄时静默失败。
+# 于是 %TEMP%\jeik_engine_* 会一直累积，最终吃满磁盘。
+# ---------------------------------------------------------------------------
+_PROFILE_PREFIX = "jeik_engine_"
+_OWNER_SUFFIX = ".owner"
+_LIVE_PROFILES: Dict[str, Any] = {}
+_PROFILE_LOCK = threading.Lock()
+_ATEXIT_REGISTERED = False
+
+
+def _owner_path(profile_dir: str) -> str:
+    return profile_dir + _OWNER_SUFFIX
+
+
+def _write_owner(profile_dir: str, pid: int) -> None:
+    try:
+        with open(_owner_path(profile_dir), "w", encoding="utf-8") as handle:
+            handle.write(str(pid))
+    except OSError:
+        pass
+
+
+def _read_owner(profile_dir: str) -> Optional[int]:
+    try:
+        with open(_owner_path(profile_dir), "r", encoding="utf-8") as handle:
+            return int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _process_alive(pid: int) -> bool:
+    """跨平台判断 pid 是否仍存活（用于识别遗留 profile 的真正归属）。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            # PROCESS_QUERY_LIMITED_INFORMATION
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return False
+                return code.value == 259  # STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _remove_tree(path: str, attempts: int = 4) -> bool:
+    """带重试地删除目录：Windows 上目录句柄释放有延迟。"""
+    for index in range(attempts):
+        if not os.path.exists(path):
+            _unlink_quietly(_owner_path(path))
+            return True
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            _unlink_quietly(_owner_path(path))
+            return True
+        time.sleep(0.25 * (index + 1))
+    return not os.path.exists(path)
+
+
+def _kill_process_tree(process) -> None:
+    """结束浏览器及其子进程，并回收僵尸。"""
+    if process is None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True,
+            )
+        else:
+            process.kill()
+    except Exception:
+        pass
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def sweep_stale_profiles(min_age_secs: float = 3600.0) -> int:
+    """
+    回收遗留 profile：owner 进程已不存在（或被强杀）就直接删除。
+
+    没有 owner 标记的旧目录只在超过 `min_age_secs` 未修改时才删，避免误删
+    另一个正在并发抓取的进程刚建好的目录。
+    """
+    root = tempfile.gettempdir()
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return 0
+
+    removed = 0
+    now = time.time()
+    for name in entries:
+        if not name.startswith(_PROFILE_PREFIX):
+            continue
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            continue
+        with _PROFILE_LOCK:
+            if path in _LIVE_PROFILES:
+                continue
+        owner = _read_owner(path)
+        if owner is not None:
+            if _process_alive(owner):
+                continue
+        else:
+            try:
+                if now - os.path.getmtime(path) < min_age_secs:
+                    continue
+            except OSError:
+                continue
+        if _remove_tree(path):
+            removed += 1
+    return removed
+
+
+def _register_live_profile(path: str, process) -> None:
+    with _PROFILE_LOCK:
+        _LIVE_PROFILES[path] = process
+
+
+def _unregister_live_profile(path: str) -> None:
+    with _PROFILE_LOCK:
+        _LIVE_PROFILES.pop(path, None)
+
+
+def _reap_all_live_profiles_at_exit() -> None:
+    """进程退出前的最后一道保险（覆盖 sys.exit / 未捕获异常）。"""
+    with _PROFILE_LOCK:
+        entries = list(_LIVE_PROFILES.items())
+    for path, process in entries:
+        _kill_process_tree(process)
+        _remove_tree(path)
+
+
+def _ensure_exit_hook() -> None:
+    global _ATEXIT_REGISTERED
+    if _ATEXIT_REGISTERED:
+        return
+    _ATEXIT_REGISTERED = True
+    try:
+        atexit.register(_reap_all_live_profiles_at_exit)
+    except Exception:
+        pass
 
 
 class ScrapeEngine:
@@ -79,7 +260,15 @@ class ScrapeEngine:
                     s.bind(("127.0.0.1", 0))
                     self.port = s.getsockname()[1]
 
-            self.tmp_dir = tempfile.mkdtemp(prefix="jeik_engine_")
+            self.tmp_dir = tempfile.mkdtemp(prefix=_PROFILE_PREFIX)
+            _write_owner(self.tmp_dir, os.getpid())
+            _ensure_exit_hook()
+
+            # 顺手回收历史遗留 profile（被强杀的进程 / Windows 句柄未释放）
+            try:
+                sweep_stale_profiles()
+            except Exception:
+                pass
             dns_args = DNSResolverConfig.build_chrome_args(dns)
             cmd = [
                 self.bin_path,
@@ -100,6 +289,8 @@ class ScrapeEngine:
                 f"--user-data-dir={self.tmp_dir}",
             ] + dns_args + ["about:blank"]
             self.process = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
+            if self.tmp_dir:
+                _register_live_profile(self.tmp_dir, self.process)
 
             started = False
             try:
@@ -131,18 +322,14 @@ class ScrapeEngine:
         """
         process = self.process
         self.process = None
-        if process is not None:
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=5)
-            except Exception:
-                pass
+        _kill_process_tree(process)
         if self.tmp_dir:
-            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+            profile = self.tmp_dir
             self.tmp_dir = None
+            _unregister_live_profile(profile)
+            # Windows 上 Chrome 子进程可能还要几毫秒才释放句柄；_remove_tree 内置重试，
+            # 不再用 ignore_errors 把失败静默吞掉。
+            _remove_tree(profile)
 
     async def stop(self):
         async with self._lock:

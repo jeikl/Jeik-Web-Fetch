@@ -94,7 +94,13 @@ class BrowserPool:
         self.process = None
         if process is not None:
             try:
-                process.kill()
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                        capture_output=True,
+                    )
+                else:
+                    process.kill()
             except Exception:
                 pass
             try:
@@ -102,8 +108,17 @@ class BrowserPool:
             except Exception:
                 pass
         if self.tmp_dir:
-            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+            profile = self.tmp_dir
             self.tmp_dir = None
+            # 重试删除：Windows 上 Chrome 子进程可能还没释放文件句柄，
+            # 一次性 rmtree(ignore_errors=True) 会静默失败并留下 100MB+ 残留。
+            for index in range(4):
+                if not os.path.exists(profile):
+                    break
+                shutil.rmtree(profile, ignore_errors=True)
+                if not os.path.exists(profile):
+                    break
+                time.sleep(0.25 * (index + 1))
 
     async def stop(self):
         self._reap()
