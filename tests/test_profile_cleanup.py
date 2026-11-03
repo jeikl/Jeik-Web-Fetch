@@ -6,7 +6,10 @@
 """
 
 import os
+import stat
 import time
+import socket
+import asyncio
 
 import pytest
 
@@ -94,3 +97,146 @@ def test_process_alive_recognises_self_and_bogus_pid():
     assert engine_mod._process_alive(os.getpid()) is True
     assert engine_mod._process_alive(2**22 + 54321) is False
     assert engine_mod._process_alive(0) is False
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _capturing_browser(tmp_path):
+    """假浏览器：把收到的参数写进文件，然后睡死（永远不打开 CDP 端口）。"""
+    args_file = tmp_path / "argv.txt"
+    script = tmp_path / "capturing_browser.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$@" > "{args_file}"\n'
+        "exec sleep 60\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script, args_file
+
+
+def test_ephemeral_engine_uses_temp_profile_and_disables_disk_cache(tmp_path, monkeypatch):
+    script, args_file = _capturing_browser(tmp_path)
+    monkeypatch.setattr(engine_mod, "find_system_browser", lambda: str(script))
+    monkeypatch.setenv("JEIK_BROWSER_START_TIMEOUT", "0.6")
+
+    engine = engine_mod.ScrapeEngine(port=_free_port())
+    with pytest.raises(TimeoutError):
+        asyncio.run(engine.ensure_started())
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    user_data = [arg for arg in args if arg.startswith("--user-data-dir=")]
+    assert user_data and "jeik_engine_" in user_data[0]
+    assert "--disk-cache-size=1" in args, "一次性实例应关掉磁盘缓存"
+
+
+def test_persistent_engine_reuses_profile_and_keeps_cache(tmp_path, monkeypatch):
+    script, args_file = _capturing_browser(tmp_path)
+    profile = tmp_path / "persist_profile"
+    monkeypatch.setattr(engine_mod, "find_system_browser", lambda: str(script))
+    monkeypatch.setenv("JEIK_BROWSER_START_TIMEOUT", "0.6")
+
+    engine = engine_mod.ScrapeEngine(port=_free_port(), profile_dir=str(profile))
+    with pytest.raises(TimeoutError):
+        asyncio.run(engine.ensure_started())
+
+    assert profile.is_dir(), "常驻 profile 启动失败后也不应删除"
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert f"--user-data-dir={profile}" in args
+    assert "--disk-cache-size=1" not in args, "常驻实例应保留磁盘缓存"
+    assert engine.tmp_dir is None
+
+
+def test_use_persistent_profile_switches_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("JEIK_ENGINE_PROFILE_DIR", str(tmp_path / "engine_profile"))
+    engine = engine_mod.ScrapeEngine()
+    assert engine.profile_dir is None
+
+    engine.use_persistent_profile()
+
+    assert engine.profile_dir == str(tmp_path / "engine_profile")
+
+
+def test_serve_lifespan_enables_persistent_profile(monkeypatch):
+    """`jeik serve` 必须走常驻复用模式，而不是每次都新建临时 profile。"""
+    from jeik_web_fetch.api import routes
+    from jeik_web_fetch.core.engine import default_engine
+
+    seen = {}
+
+    async def fake_ensure(*args, **kwargs):
+        raise TimeoutError("stop here")
+
+    async def fake_stop():
+        seen["stopped"] = True
+
+    monkeypatch.setattr(
+        default_engine, "use_persistent_profile", lambda path=None: seen.update(persistent=True)
+    )
+    monkeypatch.setattr(default_engine, "ensure_started", fake_ensure)
+    monkeypatch.setattr(default_engine, "stop", fake_stop)
+
+    async def run():
+        async with routes.lifespan(routes.app):
+            pass
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(run())
+
+    assert seen.get("persistent") is True
+    assert seen.get("stopped") is True
+
+
+class _FakeHttpResponse:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, timeout=None):
+        if url.endswith("/health"):
+            return _FakeHttpResponse(200, {"status": "healthy", "pool_port": 9527})
+        return _FakeHttpResponse(200, {"Browser": "Chrome/124"})
+
+
+def test_daemon_endpoint_is_discovered_from_health(monkeypatch):
+    """CLI 应该能拿到守护进程的 pool_port，从而复用它的浏览器而不再新建 profile。"""
+    monkeypatch.setattr(engine_mod.httpx, "AsyncClient", _FakeAsyncClient)
+    engine = engine_mod.ScrapeEngine()
+
+    assert asyncio.run(engine._resolve_daemon_endpoint()) == "http://127.0.0.1:9527"
+
+
+def test_daemon_reuse_kill_switch(monkeypatch):
+    monkeypatch.setenv("JEIK_NO_DAEMON_REUSE", "1")
+    engine = engine_mod.ScrapeEngine()
+
+    assert asyncio.run(engine._resolve_daemon_endpoint()) is None
+
+
+def test_daemon_endpoint_none_when_unreachable(monkeypatch):
+    class _BrokenClient(_FakeAsyncClient):
+        async def get(self, url, timeout=None):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(engine_mod.httpx, "AsyncClient", _BrokenClient)
+    engine = engine_mod.ScrapeEngine()
+
+    assert asyncio.run(engine._resolve_daemon_endpoint()) is None

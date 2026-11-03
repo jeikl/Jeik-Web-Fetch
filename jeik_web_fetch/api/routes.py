@@ -10,6 +10,9 @@ from ..core.engine import default_engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[*] 正在预热启动高性能 Chromium 常驻浏览器池...")
+    # 常驻服务：复用同一个 profile（跨请求 / 跨重启），不再每重启一次就新建
+    # 一份 131MB 的临时目录；同时保留磁盘缓存，供反复访问同类站点时复用。
+    default_engine.use_persistent_profile()
     try:
         await default_engine.ensure_started()
     except BaseException:

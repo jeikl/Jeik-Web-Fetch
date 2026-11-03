@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The sweep runs on every `ensure_started`, so leftovers are reclaimed by the next fetch or daemon start.
   - `_remove_tree()` retries with backoff instead of swallowing the failure, and the whole browser tree is killed (`taskkill /T /F` on Windows) before deletion.
   - An `atexit` hook reaps still-live profiles on `sys.exit` and uncaught exceptions.
+  - `jeik serve` now runs in **persistent-profile mode** (`~/.jeik/engine_profile`, override with `JEIK_ENGINE_PROFILE_DIR`): the browser and its profile are reused across requests *and* restarts, so a restart no longer leaves another 131 MB temporary directory behind.
+  - `jeik fetch` now **reuses the running daemon's browser** when `jeik serve` is up (discovered through `/health` → `pool_port`), so a CLI call creates no profile at all. Opt out with `JEIK_NO_DAEMON_REUSE=1`; override the endpoint with `JEIK_DAEMON_URL`. Attaching to a shared browser no longer clears its cookies.
+  - One-shot runs disable the disk cache (`--disk-cache-size=1`, `--disable-application-cache`, …), cutting a run's profile from ~131 MB to ~20-30 MB. The persistent serve profile keeps its cache, where cross-request reuse actually pays off.
   - The same retry logic was applied to the legacy `BrowserPool` in `fastapi_server.py`.
   - Regression tests in `tests/test_profile_cleanup.py`.
 - **`jeik upgrade` failed with "Could not reach GitHub releases" on Windows**: two independent defects.

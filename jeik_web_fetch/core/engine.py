@@ -60,6 +60,14 @@ _PROFILE_LOCK = threading.Lock()
 _ATEXIT_REGISTERED = False
 
 
+def default_persistent_profile_dir() -> str:
+    """常驻服务（jeik serve）使用的固定 profile 目录，跨请求、跨重启复用。"""
+    override = os.environ.get("JEIK_ENGINE_PROFILE_DIR")
+    if override:
+        return os.path.expanduser(override)
+    return os.path.join(os.path.expanduser("~"), ".jeik", "engine_profile")
+
+
 def _owner_path(profile_dir: str) -> str:
     return profile_dir + _OWNER_SUFFIX
 
@@ -230,14 +238,49 @@ class ScrapeEngine:
     - 结合 ContentTransformer 进行多线程并行提取
     - 结合 StorageManager 自动保存到本地临时文件或指定工程目录
     """
-    def __init__(self, port: int = 9527, thread_workers: Optional[int] = None):
+    def __init__(
+        self,
+        port: int = 9527,
+        thread_workers: Optional[int] = None,
+        profile_dir: Optional[str] = None,
+    ):
         self.port = port
         self.process: Optional[subprocess.Popen] = None
         self.tmp_dir: Optional[str] = None
+        # None = 一次性实例：每次 mkdtemp 一个临时 profile，关停时删除（CLI / 技能调用）
+        # 非 None = 常驻实例：复用同一个目录，不删、不重建（jeik serve）
+        self.profile_dir: Optional[str] = os.path.expanduser(profile_dir) if profile_dir else None
         self.bin_path: str = ""
         self._lock = asyncio.Lock()
         # 针对 CPU 密集的 HTML/DOM/正则/Markdown 转换分配专用多线程池
         self.executor = ThreadPoolExecutor(max_workers=thread_workers or min(32, (os.cpu_count() or 4) * 2))
+
+    def use_persistent_profile(self, path: Optional[str] = None) -> None:
+        """
+        切换到「常驻复用」模式：
+
+        - profile 固定落在 `~/.jeik/engine_profile`（可用 JEIK_ENGINE_PROFILE_DIR 覆盖）；
+        - 跨请求、跨重启复用同一份，不再每重启一次就留下一份 131MB 临时目录；
+        - 保留磁盘缓存，因为常驻浏览器会反复访问同类站点，缓存确实有收益。
+
+        一次性调用（`jeik fetch`）不要用这个：临时 profile 用完即删才干净。
+        """
+        self.profile_dir = os.path.expanduser(path) if path else default_persistent_profile_dir()
+
+    def _cache_flags(self) -> List[str]:
+        """
+        一次性实例关掉磁盘缓存：profile 用完即删，缓存不会被下一次复用，
+        却会让单次落盘从 ~131MB 降到 ~20-30MB。常驻实例保留缓存（跨请求有收益）。
+        """
+        if self.profile_dir:
+            return []
+        return [
+            "--disk-cache-size=1",
+            "--disable-application-cache",
+            "--disable-gpu-shader-disk-cache",
+            "--disable-component-update",
+            "--no-pings",
+        ]
 
     async def ensure_started(self, dns: Optional[str] = None):
         async with self._lock:
@@ -260,8 +303,15 @@ class ScrapeEngine:
                     s.bind(("127.0.0.1", 0))
                     self.port = s.getsockname()[1]
 
-            self.tmp_dir = tempfile.mkdtemp(prefix=_PROFILE_PREFIX)
-            _write_owner(self.tmp_dir, os.getpid())
+            # 常驻实例复用固定 profile；一次性实例用临时目录并在关停时删除。
+            if self.profile_dir:
+                os.makedirs(self.profile_dir, exist_ok=True)
+                user_data_dir = self.profile_dir
+                self.tmp_dir = None
+            else:
+                user_data_dir = tempfile.mkdtemp(prefix=_PROFILE_PREFIX)
+                self.tmp_dir = user_data_dir
+                _write_owner(self.tmp_dir, os.getpid())
             _ensure_exit_hook()
 
             # 顺手回收历史遗留 profile（被强杀的进程 / Windows 句柄未释放）
@@ -286,8 +336,8 @@ class ScrapeEngine:
                 "--no-first-run",
                 "--no-default-browser-check",
                 f"--remote-debugging-port={self.port}",
-                f"--user-data-dir={self.tmp_dir}",
-            ] + dns_args + ["about:blank"]
+                f"--user-data-dir={user_data_dir}",
+            ] + self._cache_flags() + dns_args + ["about:blank"]
             self.process = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
             if self.tmp_dir:
                 _register_live_profile(self.tmp_dir, self.process)
@@ -361,6 +411,34 @@ class ScrapeEngine:
             if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
                 endpoint = f"http://{endpoint}"
             return endpoint.rstrip("/")
+        return None
+
+    async def _resolve_daemon_endpoint(self) -> Optional[str]:
+        """
+        如果本机 `jeik serve` 正在运行，复用它的常驻浏览器。
+
+        CLI 每次调用都是独立进程，进程内无法复用；但守护进程本来就长期持有
+        一个 Chromium。直接接到它的 CDP 端点上，新 tab 用完即关，就完全不需要
+        再创建一份 131MB 的临时 profile —— 既不会累积，也省掉每次的写盘+删除。
+        """
+        if os.environ.get("JEIK_NO_DAEMON_REUSE") == "1":
+            return None
+
+        base = os.environ.get("JEIK_DAEMON_URL", "http://127.0.0.1:8863").rstrip("/")
+        try:
+            async with httpx.AsyncClient() as client:
+                health = await client.get(f"{base}/health", timeout=0.6)
+                if health.status_code != 200:
+                    return None
+                pool_port = health.json().get("pool_port")
+                if not pool_port:
+                    return None
+                endpoint = f"http://127.0.0.1:{int(pool_port)}"
+                probe = await client.get(f"{endpoint}/json/version", timeout=0.6)
+                if probe.status_code == 200:
+                    return endpoint
+        except Exception:
+            return None
         return None
 
     def _resolve_cookies_and_headers(
@@ -479,6 +557,7 @@ class ScrapeEngine:
         target_id = None
         cdp_base = None
         should_close_tab = False
+        shared_engine = False
         t0 = time.time()
         try:
             # 模式策略自适配 (--fast / --common / --complex)
@@ -521,8 +600,16 @@ class ScrapeEngine:
 
             # Tier 2: 降级自愈升级至无头浏览器 / 连接现有运行中的浏览器实例
             if not external_cdp:
-                await self.ensure_started(dns=options.dns)
-                cdp_base = f"http://127.0.0.1:{self.port}"
+                # CLI（非常驻实例）优先复用正在运行的 jeik serve 浏览器：
+                # 不新建 profile，也就没有写盘/删除的拖抖与累积。
+                if not self.profile_dir and not options.attach_tab and not options.tab:
+                    external_cdp = await self._resolve_daemon_endpoint()
+                    shared_engine = external_cdp is not None
+                if external_cdp:
+                    cdp_base = external_cdp
+                else:
+                    await self.ensure_started(dns=options.dns)
+                    cdp_base = f"http://127.0.0.1:{self.port}"
 
             async with httpx.AsyncClient() as client:
                 # 连通性校验
@@ -591,7 +678,9 @@ class ScrapeEngine:
                 await ws.send(json.dumps({"id": 102, "method": "Page.enable"}))
 
                 # 若是新建的独立临时 Tab，清理上一轮可能残留的临时 Cookie，确保请求与请求之间的会话天然隔离
-                if should_close_tab:
+                # 只用我们自己的浏览器时才清空整站 Cookie；复用守护进程的常驻
+                # 浏览器时不能清它的会话。
+                if should_close_tab and not shared_engine:
                     await ws.send(json.dumps({"id": 100, "method": "Network.clearBrowserCookies"}))
 
                 # 2. 注入反爬特征 (页面导航前注册生命周期脚本 + 当前运行时求值)
