@@ -54,10 +54,15 @@ def test_resolve_endpoint_refuses_remote_base(monkeypatch):
 
 
 def test_spawn_command_binds_loopback_only():
-    cmd = dc._spawn_command(8863, 300)
+    cmd = dc._spawn_command(8863, dc.AUTO_IDLE_EXIT_SECS)
 
     assert cmd[cmd.index("--host") + 1] == "127.0.0.1"
-    assert cmd[cmd.index("--idle-exit") + 1] == "300"
+    assert cmd[cmd.index("--idle-exit") + 1] == str(dc.AUTO_IDLE_EXIT_SECS)
+
+
+def test_default_idle_exit_is_one_hour():
+    """自动拉起的守护进程闲置 1 小时才退出，避免反复冷启动。"""
+    assert dc.AUTO_IDLE_EXIT_SECS == 3600
 
 
 def test_spawn_command_in_module_mode(monkeypatch):

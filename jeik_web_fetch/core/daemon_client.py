@@ -6,7 +6,7 @@ Chromium 并写一份 ~131MB 的 profile，不如：
 1. 先探测本机是否已有 `jeik serve` 在跑；
 2. 没有就以**分离进程**拉起一个（POSIX `start_new_session` / Windows
    `DETACHED_PROCESS`），不阻塞当前终端，也不随 CLI 退出而死；
-3. 该守护进程空闲 `JEIK_DAEMON_IDLE_EXIT`（默认 300s）后自行退出，
+3. 该守护进程空闲 `JEIK_DAEMON_IDLE_EXIT`（默认 3600s，即 1 小时）后自行退出，
    不会长期占用内存。
 
 可通过环境变量关闭：
@@ -16,7 +16,7 @@ Chromium 并写一份 ~131MB 的 profile，不如：
 相关环境变量：
   - `JEIK_DAEMON_URL`（默认 http://127.0.0.1:8863）
   - `JEIK_DAEMON_PORT`（默认 8863，自动拉起时用）
-  - `JEIK_DAEMON_IDLE_EXIT`（默认 300 秒）
+  - `JEIK_DAEMON_IDLE_EXIT`（默认 3600 秒，即 1 小时）
   - `JEIK_DAEMON_SPAWN_WAIT`（默认 25 秒，等待守护进程就绪的上限）
 """
 
@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 import httpx
 
 DEFAULT_DAEMON_PORT = int(os.environ.get("JEIK_DAEMON_PORT", "8863"))
-AUTO_IDLE_EXIT_SECS = int(os.environ.get("JEIK_DAEMON_IDLE_EXIT", "300"))
+AUTO_IDLE_EXIT_SECS = int(os.environ.get("JEIK_DAEMON_IDLE_EXIT", "3600"))
 SPAWN_WAIT_SECS = float(os.environ.get("JEIK_DAEMON_SPAWN_WAIT", "25"))
 
 # 守护进程只允许回环地址：它没有鉴权，一旦绑到 0.0.0.0 就是公网开放代理。
