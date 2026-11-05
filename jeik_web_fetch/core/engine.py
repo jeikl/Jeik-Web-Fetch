@@ -21,6 +21,7 @@ from .classifier import ContentQualityClassifier
 from .cookies import CookieHelper, default_cookie_store
 from .browser_mgr import browser_mgr
 from .updater import updater
+from .resources import process_alive as _process_alive
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
@@ -93,38 +94,6 @@ def _read_owner(profile_dir: str) -> Optional[int]:
             return int(handle.read().strip())
     except (OSError, ValueError):
         return None
-
-
-def _process_alive(pid: int) -> bool:
-    """跨平台判断 pid 是否仍存活（用于识别遗留 profile 的真正归属）。"""
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            # PROCESS_QUERY_LIMITED_INFORMATION
-            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-            if not handle:
-                return False
-            try:
-                code = ctypes.c_ulong()
-                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                    return False
-                return code.value == 259  # STILL_ACTIVE
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception:
-            return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def _unlink_quietly(path: str) -> None:

@@ -216,27 +216,26 @@ class _FakeAsyncClient:
         return _FakeHttpResponse(200, {"Browser": "Chrome/124"})
 
 
-def test_daemon_endpoint_is_discovered_from_health(monkeypatch):
-    """CLI 应该能拿到守护进程的 pool_port，从而复用它的浏览器而不再新建 profile。"""
-    monkeypatch.setattr(engine_mod.httpx, "AsyncClient", _FakeAsyncClient)
+def test_engine_delegates_daemon_resolution(monkeypatch):
+    """引擎把守护进程探测完全委托给 daemon_client（槽位池）。"""
+    from jeik_web_fetch.core import daemon_client as dc
+
+    async def fake_resolve():
+        return "http://127.0.0.1:9527"
+
+    monkeypatch.setattr(dc, "resolve_endpoint", fake_resolve)
     engine = engine_mod.ScrapeEngine()
 
     assert asyncio.run(engine._resolve_daemon_endpoint()) == "http://127.0.0.1:9527"
 
 
-def test_daemon_reuse_kill_switch(monkeypatch):
-    monkeypatch.setenv("JEIK_NO_DAEMON_REUSE", "1")
-    engine = engine_mod.ScrapeEngine()
+def test_engine_tolerates_daemon_resolution_errors(monkeypatch):
+    from jeik_web_fetch.core import daemon_client as dc
 
-    assert asyncio.run(engine._resolve_daemon_endpoint()) is None
+    async def boom():
+        raise OSError("connection refused")
 
-
-def test_daemon_endpoint_none_when_unreachable(monkeypatch):
-    class _BrokenClient(_FakeAsyncClient):
-        async def get(self, url, timeout=None):
-            raise OSError("connection refused")
-
-    monkeypatch.setattr(engine_mod.httpx, "AsyncClient", _BrokenClient)
+    monkeypatch.setattr(dc, "resolve_endpoint", boom)
     engine = engine_mod.ScrapeEngine()
 
     assert asyncio.run(engine._resolve_daemon_endpoint()) is None

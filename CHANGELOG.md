@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Browser slot pool with memory-aware sizing**: `jeik fetch` now borrows an exclusive slot (one browser + one profile) instead of queueing behind a single daemon. An empty pool creates the `anchor` slot (idle TTL 3600s); concurrent calls create `temp` slots (1200s) up to a cap derived from physical memory — ≤1.5 GB → 1, ≤2.5 GB → 2, ≤6 GB → 3, else 4 (cgroup-aware inside containers). At the cap a call immediately falls back to a private one-shot engine instead of waiting, and every slot is reclaimed by its own idle timer.
+  - Registry is one JSON file per slot plus `O_CREAT|O_EXCL` leases, so concurrent processes never overwrite each other; a lease left by a killed process is stolen after `JEIK_POOL_LEASE_TTL` (default 300s).
+  - A pre-existing hand-started `jeik serve` is adopted as the anchor (health-managed, PID unknown) instead of spawning a second daemon.
+  - Tunables: `JEIK_POOL_MAX`, `JEIK_POOL_ANCHOR_TTL`, `JEIK_POOL_TEMP_TTL`, `JEIK_POOL_LEASE_TTL`, `JEIK_POOL_DIR`.
+  - Regression tests: `tests/test_daemon_guard.py`, `tests/test_resources.py`.
+
 ### Changed
 - **The daemon now binds to loopback by default**: `jeik serve --host` defaults to `127.0.0.1` instead of `0.0.0.0`. The service has no authentication, so the old default exposed an open scraping proxy — and its CDP port through `/health` — to anyone who could reach the machine. Binding to a non-loopback interface now requires an explicit `--allow-public`, both installers (`scripts/install.sh`, `scripts/install.ps1`) pass `--host 127.0.0.1`, and CORS is limited to localhost origins so a random website can no longer drive the local browser.
 - **`jeik fetch` reuses an auto-spawned daemon**: instead of requiring a manually started `jeik serve`, the CLI probes `127.0.0.1:8863` and, when nothing is listening, spawns a detached daemon with `--idle-exit 3600` (it exits by itself after an hour idle). Only loopback endpoints are ever accepted; `JEIK_NO_DAEMON_REUSE=1` disables reuse and `JEIK_NO_AUTO_DAEMON=1` disables auto-spawn.
