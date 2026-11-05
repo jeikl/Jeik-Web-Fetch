@@ -240,3 +240,58 @@ def test_daemon_endpoint_none_when_unreachable(monkeypatch):
     engine = engine_mod.ScrapeEngine()
 
     assert asyncio.run(engine._resolve_daemon_endpoint()) is None
+
+
+def test_remove_profile_also_removes_snap_mirror(temp_root):
+    """snap 会把真实数据写到 snap-private-tmp，只删宿主空壳等于没删。"""
+    host = _make_profile(temp_root, "jeik_engine_snap", owner_pid=os.getpid())
+    mirror = temp_root / "snap-private-tmp" / "snap.chromium" / "tmp" / "jeik_engine_snap"
+    (mirror / "Default").mkdir(parents=True, exist_ok=True)
+    (mirror / "Default" / "data").write_text("x" * 1024, encoding="utf-8")
+
+    assert engine_mod._remove_profile(str(host)) is True
+
+    assert not host.exists()
+    assert not mirror.exists(), "snap 私有目录镜像也必须一并删除"
+
+
+def test_sweep_removes_snap_mirror_without_host_dir(temp_root):
+    mirror = temp_root / "snap-private-tmp" / "snap.chromium" / "tmp" / "jeik_engine_mirroronly"
+    (mirror / "Default").mkdir(parents=True, exist_ok=True)
+    (mirror / "Default" / "data").write_text("x", encoding="utf-8")
+    old = time.time() - 7200
+    os.utime(mirror, (old, old))
+
+    assert engine_mod.sweep_stale_profiles(min_age_secs=3600) == 1
+    assert not mirror.exists()
+
+
+def test_sweep_kills_orphan_processes_for_dead_owner(temp_root, monkeypatch):
+    """owner 被 SIGKILL 后浏览器可能还活着，清扫时必须把它一起收掉。"""
+    path = _make_profile(temp_root, "jeik_engine_deadowner", owner_pid=2**22 + 777)
+    killed = []
+    monkeypatch.setattr(engine_mod, "_profile_pids", lambda p: [4242])
+    monkeypatch.setattr(engine_mod, "_kill_processes", lambda pids: killed.extend(pids))
+
+    assert engine_mod.sweep_stale_profiles(min_age_secs=0) == 1
+    assert killed == [4242]
+    assert not path.exists()
+
+
+def test_sweep_keeps_in_use_profile_without_owner(temp_root, monkeypatch):
+    """旧版本没有 owner 标记：只要还有进程在用就绝不删。"""
+    path = _make_profile(temp_root, "jeik_engine_inuse", age_secs=7200)
+    monkeypatch.setattr(engine_mod, "_profile_pids", lambda p: [12345])
+
+    assert engine_mod.sweep_stale_profiles(min_age_secs=3600) == 0
+    assert path.exists()
+
+
+def test_shared_browser_detection():
+    """共享浏览器不能清整站 Cookie，否则并发抓取会互相抹掉登录态。"""
+    ephemeral = engine_mod.ScrapeEngine()
+    assert ephemeral._is_shared_browser(None) is False
+    assert ephemeral._is_shared_browser("http://127.0.0.1:9222") is True
+
+    persistent = engine_mod.ScrapeEngine(profile_dir="/tmp/jeik_profile_probe")
+    assert persistent._is_shared_browser(None) is True

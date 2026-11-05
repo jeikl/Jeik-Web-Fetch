@@ -161,42 +161,175 @@ def _kill_process_tree(process) -> None:
         pass
 
 
+def _snap_private_tmp_mirrors(profile_dir: str) -> List[str]:
+    """
+    snap 会把应用的 `/tmp` 重定向到 `<tmp>/snap-private-tmp/<snap>/tmp/`。
+
+    实测：Chromium 通过 snap 运行时，`--user-data-dir=/tmp/jeik_engine_x` 里的
+    135MB 真实数据全部落在 snap 私有目录，宿主侧 `/tmp/jeik_engine_x` 只剩一个
+    4KB 空壳。只删宿主路径就是「看起来删干净了，磁盘一点没少」。
+    """
+    name = os.path.basename(profile_dir.rstrip("/\\"))
+    root = os.path.join(tempfile.gettempdir(), "snap-private-tmp")
+    mirrors: List[str] = []
+    try:
+        apps = os.listdir(root)
+    except OSError:
+        return mirrors
+    for app in apps:
+        candidate = os.path.join(root, app, "tmp", name)
+        if os.path.isdir(candidate):
+            mirrors.append(candidate)
+    return mirrors
+
+
+def _remove_profile(profile_dir: str) -> bool:
+    """删除 profile 本体及其 snap 私有目录镜像。"""
+    removed = _remove_tree(profile_dir)
+    for mirror in _snap_private_tmp_mirrors(profile_dir):
+        _remove_tree(mirror)
+    return removed
+
+
+def _profile_pids(profile_dir: str) -> List[int]:
+    """返回仍在使用该 profile 的进程 PID（硬杀后的兜底回收用）。"""
+    needle = f"--user-data-dir={profile_dir}"
+    pids: List[int] = []
+
+    if os.name == "nt":
+        escaped = needle.replace("'", "''")
+        script = (
+            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+            f"$_.CommandLine.Contains('{escaped}') }} | "
+            "Select-Object -ExpandProperty ProcessId"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception:
+            return pids
+        for token in result.stdout.split():
+            if token.isdigit():
+                pids.append(int(token))
+        return pids
+
+    encoded = needle.encode()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return pids
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        if encoded in raw:
+            pids.append(pid)
+    return pids
+
+
+def _kill_processes(pid_list: List[int]) -> None:
+    for pid in pid_list:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                )
+            else:
+                os.kill(pid, 9)
+        except Exception:
+            pass
+
+
+def _profile_mtime(profile_dir: str) -> float:
+    newest = 0.0
+    for candidate in [profile_dir] + _snap_private_tmp_mirrors(profile_dir):
+        try:
+            newest = max(newest, os.path.getmtime(candidate))
+        except OSError:
+            pass
+    return newest
+
+
+def _profile_candidates() -> List[str]:
+    """列出宿主临时目录与 snap 私有临时目录里的所有 profile 目录名。"""
+    root = tempfile.gettempdir()
+    names = set()
+
+    try:
+        for entry in os.listdir(root):
+            if entry.startswith(_PROFILE_PREFIX) and not entry.endswith(_OWNER_SUFFIX):
+                if os.path.isdir(os.path.join(root, entry)):
+                    names.add(entry)
+    except OSError:
+        pass
+
+    snap_root = os.path.join(root, "snap-private-tmp")
+    try:
+        for app in os.listdir(snap_root):
+            app_tmp = os.path.join(snap_root, app, "tmp")
+            try:
+                for entry in os.listdir(app_tmp):
+                    if entry.startswith(_PROFILE_PREFIX) and os.path.isdir(
+                        os.path.join(app_tmp, entry)
+                    ):
+                        names.add(entry)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+    return sorted(names)
+
+
 def sweep_stale_profiles(min_age_secs: float = 3600.0) -> int:
     """
-    回收遗留 profile：owner 进程已不存在（或被强杀）就直接删除。
+    回收遗留 profile（含 snap 私有目录镜像）以及仍挂在它们上面的孤儿浏览器。
 
-    没有 owner 标记的旧目录只在超过 `min_age_secs` 未修改时才删，避免误删
-    另一个正在并发抓取的进程刚建好的目录。
+    - owner PID 已死：先杀掉仍在用它的浏览器，再删目录；
+    - 没有 owner 标记（旧版本创建）：在用时绝不删，否则只有超过
+      `min_age_secs` 未修改才回收。
     """
     root = tempfile.gettempdir()
-    try:
-        entries = os.listdir(root)
-    except OSError:
-        return 0
-
     removed = 0
     now = time.time()
-    for name in entries:
-        if not name.startswith(_PROFILE_PREFIX):
-            continue
-        path = os.path.join(root, name)
-        if not os.path.isdir(path):
-            continue
+
+    for name in _profile_candidates():
+        host_path = os.path.join(root, name)
         with _PROFILE_LOCK:
-            if path in _LIVE_PROFILES:
+            if host_path in _LIVE_PROFILES:
                 continue
-        owner = _read_owner(path)
+
+        owner = _read_owner(host_path)
         if owner is not None:
             if _process_alive(owner):
                 continue
+            # 宿主进程已死，但浏览器可能还活着（被 SIGKILL / OOM 时）
+            _kill_processes(_profile_pids(host_path))
         else:
-            try:
-                if now - os.path.getmtime(path) < min_age_secs:
-                    continue
-            except OSError:
+            # 旧版本没有 owner 标记：只要还有进程在用就不能碰
+            if _profile_pids(host_path):
                 continue
-        if _remove_tree(path):
+            mtime = _profile_mtime(host_path)
+            if not mtime:
+                continue
+            if now - mtime < min_age_secs:
+                continue
+
+        if _remove_profile(host_path):
             removed += 1
+
     return removed
 
 
@@ -216,7 +349,7 @@ def _reap_all_live_profiles_at_exit() -> None:
         entries = list(_LIVE_PROFILES.items())
     for path, process in entries:
         _kill_process_tree(process)
-        _remove_tree(path)
+        _remove_profile(path)
 
 
 def _ensure_exit_hook() -> None:
@@ -378,8 +511,8 @@ class ScrapeEngine:
             self.tmp_dir = None
             _unregister_live_profile(profile)
             # Windows 上 Chrome 子进程可能还要几毫秒才释放句柄；_remove_tree 内置重试，
-            # 不再用 ignore_errors 把失败静默吞掉。
-            _remove_tree(profile)
+            # 并且要连 snap 私有临时目录里的镜像一起删。
+            _remove_profile(profile)
 
     async def stop(self):
         async with self._lock:
@@ -542,6 +675,17 @@ class ScrapeEngine:
         except Exception:
             return None
 
+    def _is_shared_browser(self, external_cdp: Optional[str]) -> bool:
+        """
+        当前浏览器是否被“共享”使用。
+
+        共享意味着可能同时有多个抓取并发跑：
+          - 复用了外部/守护进程的浏览器（external_cdp 非空）；
+          - 常驻实例（profile_dir 非空，`jeik serve`）。
+        共享时绝不能清空整站 Cookie，否则会把并发中其它抓取的登录态一并抹掉。
+        """
+        return external_cdp is not None or self.profile_dir is not None
+
     async def scrape_url(self, options: ScrapeOptions) -> ScrapeResult:
         updater.enter_task()
         target_id = None
@@ -594,12 +738,15 @@ class ScrapeEngine:
                 # 不新建 profile，也就没有写盘/删除的拖抖与累积。
                 if not self.profile_dir and not options.attach_tab and not options.tab:
                     external_cdp = await self._resolve_daemon_endpoint()
-                    shared_engine = external_cdp is not None
                 if external_cdp:
                     cdp_base = external_cdp
                 else:
                     await self.ensure_started(dns=options.dns)
                     cdp_base = f"http://127.0.0.1:{self.port}"
+
+            # 共享浏览器（守护进程 / 常驻 profile）里可能同时有多个抓取：
+            # 此时清空整站 Cookie 会互相干扰，所以只在独占的临时实例里做。
+            shared_engine = self._is_shared_browser(external_cdp)
 
             async with httpx.AsyncClient() as client:
                 # 连通性校验
