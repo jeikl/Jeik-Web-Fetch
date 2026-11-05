@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.2.2] - 2026-11-05
 
 ### Added
 - **Browser slot pool with memory-aware sizing**: `jeik fetch` now borrows an exclusive slot (one browser + one profile) instead of queueing behind a single daemon. An empty pool creates the `anchor` slot (idle TTL 3600s); concurrent calls create `temp` slots (1200s) up to a cap derived from physical memory — ≤1.5 GB → 1, ≤2.5 GB → 2, ≤6 GB → 3, else 4 (cgroup-aware inside containers). At the cap a call immediately falls back to a private one-shot engine instead of waiting, and every slot is reclaimed by its own idle timer.
