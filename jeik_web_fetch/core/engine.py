@@ -61,11 +61,18 @@ _ATEXIT_REGISTERED = False
 
 
 def default_persistent_profile_dir() -> str:
-    """常驻服务（jeik serve）使用的固定 profile 目录，跨请求、跨重启复用。"""
+    """
+    常驻服务（jeik serve）使用的固定 profile 目录，跨请求、跨重启复用。
+
+    目录会按服务端口区分：多个 `jeik serve`（不同端口）若共用同一个
+    user-data-dir，Chromium 会因目录被占用而启动失败。
+    """
     override = os.environ.get("JEIK_ENGINE_PROFILE_DIR")
     if override:
         return os.path.expanduser(override)
-    return os.path.join(os.path.expanduser("~"), ".jeik", "engine_profile")
+    port = os.environ.get("JEIK_SERVE_PORT", "").strip()
+    suffix = f"_{port}" if port else ""
+    return os.path.join(os.path.expanduser("~"), ".jeik", f"engine_profile{suffix}")
 
 
 def _owner_path(profile_dir: str) -> str:

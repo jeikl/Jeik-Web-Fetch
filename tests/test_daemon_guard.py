@@ -130,3 +130,29 @@ def test_resolve_endpoint_respects_kill_switches(monkeypatch):
 
     assert asyncio.run(dc.resolve_endpoint()) is None
     assert spawned == []
+
+
+def test_persistent_profile_is_isolated_per_port(monkeypatch, tmp_path):
+    """多个 serve 实例不能争用同一个 user-data-dir。"""
+    from jeik_web_fetch.core.engine import default_persistent_profile_dir
+
+    monkeypatch.delenv("JEIK_ENGINE_PROFILE_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    monkeypatch.setenv("JEIK_SERVE_PORT", "8863")
+    first = default_persistent_profile_dir()
+    monkeypatch.setenv("JEIK_SERVE_PORT", "9000")
+    second = default_persistent_profile_dir()
+
+    assert first != second
+    assert first.endswith("engine_profile_8863")
+    assert second.endswith("engine_profile_9000")
+
+
+def test_persistent_profile_env_override_wins(monkeypatch, tmp_path):
+    from jeik_web_fetch.core.engine import default_persistent_profile_dir
+
+    monkeypatch.setenv("JEIK_SERVE_PORT", "8863")
+    monkeypatch.setenv("JEIK_ENGINE_PROFILE_DIR", str(tmp_path / "custom"))
+
+    assert default_persistent_profile_dir() == str(tmp_path / "custom")

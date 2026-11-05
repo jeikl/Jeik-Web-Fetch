@@ -714,6 +714,8 @@ def main():
         run_browser_command(args)
     elif args.command == "serve":
         guard_bind_host(args.host, getattr(args, "allow_public", False))
+        # 按端口隔离常驻 profile，避免多个 serve 实例争用同一个 user-data-dir
+        os.environ["JEIK_SERVE_PORT"] = str(args.port)
         idle_exit = getattr(args, "idle_exit", 0) or 0
         if idle_exit > 0:
             os.environ["JEIK_SERVE_IDLE_EXIT"] = str(idle_exit)
