@@ -52,31 +52,58 @@ Write-Host "    URL: $DownloadUrl"
 
 # 关键：Windows 会锁住正在运行的 exe，直接 OutFile 到 $TargetExe 必然报
 # "The process cannot access the file ... because it is being used by another process"。
-# 因此先下载到 .new，再停掉后台 serve，最后用「重命名旧文件 → 移入新文件」完成替换
-# （Windows 允许重命名正在运行的 exe，只是不允许覆盖它）。
+# 另外 Windows PowerShell 5.1 的 `Move-Item -Force` **不能覆盖已存在的文件**，
+# 所以必须先把旧文件改名腾位，且备份名要唯一（否则残留的 jeik.exe.old 会让
+# 改名也失败）。
 $StagedExe = "$TargetExe.new"
-$BackupExe = "$TargetExe.old"
-foreach ($stale in @($StagedExe, $BackupExe)) {
-    if (Test-Path $stale) { Remove-Item $stale -Force -ErrorAction SilentlyContinue }
-}
+$BackupExe = "$TargetExe.old-" + (Get-Date -Format 'yyyyMMddHHmmss')
+$TargetDirPath = Split-Path $TargetExe -Parent
+
+# 清理上次残留（尽力而为：被占用的文件删不掉就跳过，不阻断安装）
+Get-ChildItem $TargetDirPath -Filter 'jeik.exe.new*' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem $TargetDirPath -Filter 'jeik.exe.old-*' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 Invoke-WebRequest -Uri $DownloadUrl -OutFile $StagedExe -UseBasicParsing
 
 # 只停后台常驻服务，绝不能误杀正在执行本次升级的 CLI 进程
 Get-CimInstance Win32_Process -Filter "Name='jeik.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match 'serve' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Milliseconds 300
+Start-Sleep -Milliseconds 500
 
-try {
-    Move-Item -Path $StagedExe -Destination $TargetExe -Force -ErrorAction Stop
-} catch {
-    # 目标仍被占用（例如还有另一个 jeik 在用）：先把它改名腾位
-    if (Test-Path $TargetExe) {
-        Rename-Item -Path $TargetExe -NewName (Split-Path $BackupExe -Leaf) -Force -ErrorAction SilentlyContinue
-    }
-    Move-Item -Path $StagedExe -Destination $TargetExe -Force
+$swapped = $false
+
+# 1) 目标不存在：直接放入
+if (-not (Test-Path $TargetExe)) {
+    Move-Item -Path $StagedExe -Destination $TargetExe -Force -ErrorAction SilentlyContinue
+    $swapped = Test-Path $TargetExe
 }
-Remove-Item $BackupExe -Force -ErrorAction SilentlyContinue
+
+# 2) 目标存在：重命名腾位，再把新文件放进去（每步显式校验）
+if (-not $swapped -and (Test-Path $TargetExe)) {
+    try {
+        Rename-Item -Path $TargetExe -NewName (Split-Path $BackupExe -Leaf) -Force -ErrorAction Stop
+        Move-Item -Path $StagedExe -Destination $TargetExe -Force -ErrorAction Stop
+        $swapped = Test-Path $TargetExe
+    } catch {
+        $swapped = $false
+    }
+}
+
+# 3) 仍被占用（杀毒/EDR 等）：安排在当前进程退出后由独立 cmd 完成替换
+if (-not $swapped) {
+    $bat = Join-Path $env:TEMP 'jeik-selfupdate.cmd'
+    @"
+@echo off
+ping -n 4 127.0.0.1 >nul
+move /Y "$StagedExe" "$TargetExe"
+start "" "$TargetExe" serve --host 127.0.0.1 --port $ServicePort
+"@ | Set-Content -Path $bat -Encoding ASCII
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$bat`"" -WindowStyle Hidden
+    Write-Host "[*] jeik.exe 当前被占用，已安排在命令退出后自动完成替换。" -ForegroundColor Yellow
+}
 
 # 2. 将 .jeik\bin 添加到用户环境变量 PATH (如果尚未添加)
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -124,11 +151,16 @@ Set-ItemProperty -Path $RunKey -Name "JeikWebFetchDaemon" -Value $AppArgs
 Write-Host ($MsgDaemonReg -f $ServicePort) -ForegroundColor Green
 
 # 5. 确保后台常驻服务在运行（二进制刚被替换时，上面的循环已把它停掉）
+# 若替换被安排在「命令退出后」，这里不能先启动旧二进制，否则会重新占用文件。
 $serveRunning = Get-CimInstance Win32_Process -Filter "Name='jeik.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match 'serve' }
-if (-not $serveRunning) {
+if (-not $serveRunning -and $swapped) {
     Start-Process -FilePath $TargetExe -ArgumentList "serve --host 127.0.0.1 --port $ServicePort" -WindowStyle Hidden
     Write-Host $MsgDaemonStart -ForegroundColor Green
+}
+
+if (-not $swapped) {
+    Write-Host "[!] 替换将在本命令退出后自动完成，新版本的 serve 也会由它拉起。" -ForegroundColor Yellow
 }
 
 Write-Host ($MsgComplete -f $ServicePort) -ForegroundColor Green

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Windows self-upgrade failed with `Move-Item : Cannot create a file when that file already exists`**: Windows PowerShell 5.1's `Move-Item -Force` cannot overwrite an existing destination, and the previous fallback renamed the running `jeik.exe` to a **fixed** `jeik.exe.old`, which failed silently whenever a stale backup from an earlier attempt was still on disk — so the second move hit the original file again.
+  - The backup name now carries a timestamp (`jeik.exe.old-<yyyyMMddHHmmss>`), stale `.new`/`.old-*` files are swept first, and every step checks its result instead of relying on a swallowed exception.
+  - When the binary is still locked (AV/EDR), the installer schedules a detached `cmd` that replaces it 3 seconds later and starts the new `serve`, so the upgrade completes right after the CLI exits.
+
+---
+
 ## [1.2.2] - 2026-11-05
 
 ### Added

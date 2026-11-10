@@ -210,3 +210,7 @@ def test_windows_installer_never_writes_the_running_exe():
     assert "-OutFile $TargetExe" not in script, "不能直接覆盖正在运行的 jeik.exe"
     assert "$StagedExe" in script, "应先下载到临时文件"
     assert "Rename-Item" in script, "应通过重命名腾出被占用的目标文件"
+    # PowerShell 5.1 的 Move-Item -Force 不能覆盖已存在文件：备份名必须唯一
+    assert "jeik.exe.old-" in script, "备份名必须带唯一后缀，否则重命名会撞名失败"
+    assert "move /Y" in script, "保留「退出后替换」的兜底路径"
+    assert "$swapped" in script, "线程任一步都要显式校验结果"
