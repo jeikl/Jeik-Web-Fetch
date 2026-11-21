@@ -13,6 +13,7 @@
 import asyncio
 import os
 import sys
+import time
 
 import pytest
 
@@ -275,3 +276,67 @@ def test_health_managed_slot_is_not_pruned(pool_dir, monkeypatch):
 
     assert asyncio.run(dc.borrow()) == "http://127.0.0.1:9527"
     assert len(dc.read_slots()) == 1
+
+
+# ---------------------------------------------------------------------------
+# 运维：池状态 / 停止
+# ---------------------------------------------------------------------------
+
+def test_pool_status_reports_health(pool_dir, monkeypatch):
+    dc._write_slot(8863, os.getpid(), "anchor", dc.ANCHOR_TTL_SECS)
+    monkeypatch.setattr(dc, "slot_health", lambda port: "ready")
+
+    rows = dc.describe_slots()
+
+    assert len(rows) == 1
+    assert rows[0]["port"] == 8863
+    assert rows[0]["alive"] is True
+    assert rows[0]["leased"] is False
+    assert rows[0]["health"] == "ready"
+    assert rows[0]["profile"].endswith("engine_profile_8863")
+
+
+def test_pool_stop_kills_process_tree_and_drops_slot(pool_dir, monkeypatch):
+    dc._write_slot(8863, 424242, "anchor", dc.ANCHOR_TTL_SECS)
+    monkeypatch.setattr(dc, "process_alive", lambda pid: True)
+    killed = []
+    monkeypatch.setattr(dc, "_kill_pid", lambda pid: killed.append(pid))
+
+    message = dc.stop_slot(8863)
+
+    assert killed == [424242]
+    assert dc.read_slots() == []
+    assert "已停止" in message
+
+
+def test_pool_stop_never_kills_a_manual_serve(pool_dir):
+    dc._write_slot(8863, 0, "anchor", dc.ANCHOR_TTL_SECS)
+
+    message = dc.stop_slot(8863)
+
+    assert "Ctrl+C" in message
+    assert len(dc.read_slots()) == 1, "手工 serve 的槽位只能由用户自己停"
+
+
+# ---------------------------------------------------------------------------
+# 长抓取续租：租约不能中途过期被并发调用抢走
+# ---------------------------------------------------------------------------
+
+def test_lease_heartbeat_refreshes_a_long_scrape(pool_dir, monkeypatch):
+    monkeypatch.setattr(dc, "LEASE_TTL_SECS", 2)
+    monkeypatch.setattr(dc, "LEASE_REFRESH_SECS", 1)
+    dc._ensure_dirs()
+    with open(dc._lease_path(8863), "w", encoding="utf-8") as handle:
+        handle.write(f"{os.getpid()} 0")  # 已过期
+    assert dc._lease_alive(8863) is False
+
+    dc._BORROWED_SLOT_PORT = 8863
+    dc._start_lease_heartbeat(8863, os.getpid())
+    try:
+        time.sleep(1.3)
+        assert dc._lease_alive(8863) is True, "续租心跳没有把租约续上"
+    finally:
+        dc.release()
+
+    time.sleep(1.3)
+    assert not os.path.exists(dc._lease_path(8863)), "归还后心跳仍在写租约"

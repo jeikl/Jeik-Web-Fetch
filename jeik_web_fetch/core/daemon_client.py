@@ -30,6 +30,7 @@ import atexit
 import socket
 import asyncio
 import subprocess
+import threading
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
@@ -46,6 +47,8 @@ ANCHOR_TTL_SECS = int(
 TEMP_TTL_SECS = int(os.environ.get("JEIK_POOL_TEMP_TTL") or "1200")
 POOL_MAX = int(os.environ.get("JEIK_POOL_MAX") or default_pool_max())
 LEASE_TTL_SECS = int(os.environ.get("JEIK_POOL_LEASE_TTL") or "300")
+# 长抓取期间续租：否则 300s 租约过期后会被并发调用当成空闲槽抢走
+LEASE_REFRESH_SECS = float(os.environ.get("JEIK_POOL_LEASE_REFRESH") or "60")
 SPAWN_WAIT_SECS = float(os.environ.get("JEIK_DAEMON_SPAWN_WAIT") or "20")
 
 # 兼容旧名字（测试与外部调用仍在用）
@@ -62,6 +65,42 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _BORROWED_ENDPOINT: Optional[str] = None
 _BORROWED_SLOT_PORT: Optional[int] = None
 _ATEXIT_REGISTERED = False
+
+# 本进程拉起过的守护句柄：超时/早退时才能把进程树（含预热的 Chromium）收干净
+_SPAWNED: Dict[int, subprocess.Popen] = {}
+
+# 租约心跳（每个借出槽位一个线程，进程退出/归还即停）
+_LEASE_HEARTBEAT: Optional[threading.Thread] = None
+_LEASE_STOP: Optional[threading.Event] = None
+
+
+def _kill_pid(pid: int) -> None:
+    """结束进程树（Windows 下连同 Chromium 子进程）。"""
+    if pid <= 0:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+        else:
+            # 守护是用 start_new_session 拉起的进程组组长，整组收掉才不会留下浏览器
+            try:
+                os.killpg(os.getpgid(pid), 9)
+            except Exception:
+                os.kill(pid, 9)
+    except Exception:
+        pass
+
+
+def _kill_spawned(port: int) -> None:
+    """回收本进程为这个端口拉起的守护进程。"""
+    process = _SPAWNED.pop(port, None)
+    if process is None:
+        return
+    _kill_pid(process.pid)
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        pass
 
 
 def is_loopback_url(url: str) -> bool:
@@ -111,6 +150,13 @@ def _spawn_daemon(port: int, idle_exit: int) -> Optional[int]:
         kwargs["creationflags"] = (
             subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         )
+        # 双保险：DETACHED_PROCESS 本就不会分配控制台，但 PyInstaller 单文件引导器
+        # 会把自己的 STARTUPINFO 转交给真正的子进程；显式带上 SW_HIDE，确保任何
+        # 情况下都不会冒出一个挂在前台的黑色窗口。
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
     else:
         kwargs["start_new_session"] = True
     try:
@@ -122,6 +168,7 @@ def _spawn_daemon(port: int, idle_exit: int) -> Optional[int]:
             close_fds=True,
             **kwargs,
         )
+        _SPAWNED[port] = process
         return process.pid
     except Exception:
         return None
@@ -226,6 +273,7 @@ def _touch_slot(port: int) -> None:
 
 
 def _drop_slot(port: int) -> None:
+    _SPAWNED.pop(port, None)
     for path in (_slot_path(port), _lease_path(port)):
         try:
             os.unlink(path)
@@ -287,6 +335,55 @@ def _release_lease(port: int) -> None:
         pass
 
 
+def _lease_refresh_interval() -> float:
+    return max(1.0, min(LEASE_REFRESH_SECS, LEASE_TTL_SECS / 2.0))
+
+
+def _refresh_lease(port: int, holder_pid: int) -> None:
+    """原子续租：先写临时文件再替换，读取方不会看到半截内容而被误判为过期。"""
+    path = _lease_path(port)
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(f"{holder_pid} {time.time() + LEASE_TTL_SECS}")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _start_lease_heartbeat(port: int, holder_pid: int) -> None:
+    """借出期间持续续租，让守护的 idle watchdog 看到“还有人用”。"""
+    global _LEASE_HEARTBEAT, _LEASE_STOP
+    _stop_lease_heartbeat()
+    stop = threading.Event()
+    _LEASE_STOP = stop
+    interval = _lease_refresh_interval()
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            _refresh_lease(port, holder_pid)
+
+    _LEASE_HEARTBEAT = threading.Thread(
+        target=_beat, daemon=True, name=f"jeik-lease-{port}"
+    )
+    _LEASE_HEARTBEAT.start()
+
+
+def _stop_lease_heartbeat() -> None:
+    global _LEASE_HEARTBEAT, _LEASE_STOP
+    stop = _LEASE_STOP
+    thread = _LEASE_HEARTBEAT
+    if stop is not None:
+        stop.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=2.0)
+    _LEASE_HEARTBEAT = None
+    _LEASE_STOP = None
+
+
 def release(endpoint: Optional[str] = None) -> None:
     """归还本次借出的槽位（幂等）。
 
@@ -294,6 +391,7 @@ def release(endpoint: Optional[str] = None) -> None:
     （9527…），所以以借出时记录的槽位端口为准，不能拿 endpoint 反推。
     """
     global _BORROWED_SLOT_PORT, _BORROWED_ENDPOINT
+    _stop_lease_heartbeat()
     port = _BORROWED_SLOT_PORT
     if port is None and endpoint:
         port = _port_from_endpoint(endpoint)
@@ -414,14 +512,22 @@ async def _create_slot(
     base = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + SPAWN_WAIT_SECS
     while time.monotonic() < deadline:
+        process = _SPAWNED.get(port)
+        if process is not None and process.poll() is not None:
+            # 守护进程启动即退出（profile 被占用 / 端口冲突 / 缺浏览器）：
+            # 立即失败回退，不要让调用方白等 SPAWN_WAIT_SECS（实测 28s 中的 20s）。
+            break
         endpoint = await _probe(client, base)
         if endpoint:
             _write_slot(port, pid, role, ttl)
             _drop_port_lock(port)
-            _try_lease(port, holder_pid)
-            return endpoint, port
+            leased = _try_lease(port, holder_pid)
+            return endpoint, port, leased
         await asyncio.sleep(0.2)
 
+    # 启动失败必须回收自己拉起的守护（连同它预热的浏览器），否则每失败一次
+    # 就留下一个既无槽位登记、也无 janitor 认领的常驻进程。
+    _kill_spawned(port)
     _drop_port_lock(port)
     return None
 
@@ -464,8 +570,14 @@ async def borrow() -> Optional[str]:
             if endpoint:
                 _touch_slot(port)
                 _BORROWED_SLOT_PORT = port
+                _start_lease_heartbeat(port, holder_pid)
                 return endpoint
+            # 登记为存活但已经答不上来的槽：先把进程收掉再摘牌，
+            # 否则它就是下一个永远占着 profile / 端口的孤儿。
             _release_lease(port)
+            _kill_spawned(port)
+            if pid > 0:
+                _kill_pid(pid)
             _drop_slot(port)
 
         if os.environ.get("JEIK_NO_AUTO_DAEMON") == "1":
@@ -473,8 +585,10 @@ async def borrow() -> Optional[str]:
 
         created = await _create_slot(client, holder_pid)
         if created:
-            endpoint, port = created
+            endpoint, port, leased = created
             _BORROWED_SLOT_PORT = port
+            if leased:
+                _start_lease_heartbeat(port, holder_pid)
             return endpoint
         return None
 
@@ -503,7 +617,78 @@ async def resolve_endpoint() -> Optional[str]:
 
 
 def reset_for_tests() -> None:
-    global _BORROWED_ENDPOINT, _BORROWED_SLOT_PORT, _ATEXIT_REGISTERED
+    global _BORROWED_ENDPOINT, _BORROWED_SLOT_PORT, _ATEXIT_REGISTERED, _SPAWNED
+    _stop_lease_heartbeat()
+    _SPAWNED.clear()
     _BORROWED_ENDPOINT = None
     _BORROWED_SLOT_PORT = None
     _ATEXIT_REGISTERED = False
+
+
+# ---------------------------------------------------------------------------
+# 运维：查看 / 停止槽位池
+# ---------------------------------------------------------------------------
+
+def slot_health(port: int) -> str:
+    """探测槽位的真实状态：守护 HTTP 与它身后的 CDP 浏览器。"""
+    try:
+        health = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+        if health.status_code != 200:
+            return "unhealthy"
+        pool_port = health.json().get("pool_port")
+        if not pool_port:
+            return "no-browser"
+        version = httpx.get(f"http://127.0.0.1:{int(pool_port)}/json/version", timeout=1.0)
+        return "ready" if version.status_code == 200 else "browser-down"
+    except Exception:
+        return "unreachable"
+
+
+def describe_slots() -> List[Dict[str, Any]]:
+    """列出现存槽位（先借 janitor 清掉死槽）。"""
+    _janitor()
+    rows: List[Dict[str, Any]] = []
+    for slot in read_slots():
+        try:
+            port = int(slot["port"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        pid = int(slot.get("pid") or 0)
+        rows.append({
+            "port": port,
+            "role": slot.get("role") or "?",
+            "pid": pid,
+            "alive": pid <= 0 or process_alive(pid),
+            "leased": _lease_alive(port),
+            "idle_exit": slot.get("idle_exit"),
+            "last_used": slot.get("last_used"),
+            "health": slot_health(port),
+            "profile": os.path.join(
+                os.path.expanduser("~"), ".jeik", f"engine_profile_{port}"
+            ),
+        })
+    return rows
+
+
+def stop_slot(port: int) -> str:
+    """停掉一个由 `jeik fetch` 自动拉起的槽位（守护 + 它身后的浏览器）。"""
+    slot = next((item for item in read_slots() if int(item.get("port") or 0) == port), None)
+    if slot is None:
+        _drop_slot(port)
+        return f"端口 {port}: 未登记槽位（已清理残留文件）"
+
+    pid = int(slot.get("pid") or 0)
+    if pid <= 0:
+        # 手工 `jeik serve`：pid 未知，只能由用户在它的终端里 Ctrl+C
+        return f"端口 {port}: 手工启动的 jeik serve（pid 未知），请在它的终端里 Ctrl+C"
+    if not process_alive(pid):
+        _drop_slot(port)
+        return f"端口 {port}: pid {pid} 已不存在（槽位已清理）"
+
+    _kill_pid(pid)
+    _drop_slot(port)
+    return f"端口 {port}: 已停止 pid {pid}（守护与其浏览器进程树）"
+
+
+def stop_all_slots() -> List[str]:
+    return [stop_slot(int(slot["port"])) for slot in read_slots() if slot.get("port")]

@@ -22,9 +22,8 @@ if ($IsEn) {
     $MsgDownload = "[*] Downloading standalone binary from GitHub Releases..."
     $MsgPath = "[+] Added {0} to User PATH."
     $MsgSkill = "[+] Automatically deployed skill to universal directory: {0}"
-    $MsgDaemonReg = "[+] Registered Windows startup background daemon (Port: {0})."
-    $MsgDaemonStart = "[+] Started background daemon service immediately."
-    $MsgComplete = "`n==========================================================`n    🎉 Installation Complete! Status Summary:`n    • CLI command: jeik fetch <URL>`n    • Persistent Service Port: {0} (Running in background)`n    • Universal Agent Skill: ~/.agents/skills/jeik-web-fetch`n=========================================================="
+    $MsgDaemonClean = "[+] Removed the legacy logon daemon: jeik now spawns a windowless helper only when needed."
+    $MsgComplete = "`n==========================================================`n    🎉 Installation Complete! Status Summary:`n    • CLI command: jeik fetch <URL>`n    • Browser daemon: spawned on demand, windowless, exits when idle`n    • Optional HTTP API: jeik serve --port {0}`n    • Universal Agent Skill: ~/.agents/skills/jeik-web-fetch`n=========================================================="
 } else {
     Write-Host "==========================================================" -ForegroundColor Cyan
     Write-Host "    🚀 Jeik (Jeik-Web-Fetch) Windows 官方纯二进制在线安装器" -ForegroundColor Cyan
@@ -33,9 +32,8 @@ if ($IsEn) {
     $MsgDownload = "[*] 正在从 GitHub 官方发布下载独立二进制..."
     $MsgPath = "[+] 成功将 {0} 添加到系统用户 PATH。"
     $MsgSkill = "[+] 已自动将技能安装到所有智能体通用目录: {0}"
-    $MsgDaemonReg = "[+] 已成功配置 Windows 开机自动常驻后台服务 (端口: {0})。"
-    $MsgDaemonStart = "[+] 已立即拉起后台常驻服务。"
-    $MsgComplete = "`n==========================================================`n    🎉 安装大功告成！状态汇总:`n    • 终端 CLI 命令: jeik fetch <目标网页URL>`n    • 后台常驻服务端口: {0} (已在后台持续运行)`n    • 智能体通用技能: ~/.agents/skills/jeik-web-fetch (所有 Agent 均可直接调用)`n=========================================================="
+    $MsgDaemonClean = "[+] 已移除旧版开机常驻服务：抓取时会按需拉起无窗口守护进程。"
+    $MsgComplete = "`n==========================================================`n    🎉 安装大功告成！状态汇总:`n    • 终端 CLI 命令: jeik fetch <目标网页URL>`n    • 浏览器守护: 按需自动拉起（无窗口，空闲自动退出）`n    • 可选 HTTP API: jeik serve --port {0}`n    • 智能体通用技能: ~/.agents/skills/jeik-web-fetch (所有 Agent 均可直接调用)`n=========================================================="
 }
 
 $DownloadUrl = "https://github.com/$Repo/releases/latest/download/jeik-web-fetch-windows-x64.exe"
@@ -93,13 +91,14 @@ if (-not $swapped -and (Test-Path $TargetExe)) {
 }
 
 # 3) 仍被占用（杀毒/EDR 等）：安排在当前进程退出后由独立 cmd 完成替换
+#    注意：这里**不再**用 `start` 拉起 serve —— `start` 会给控制台程序新建一个可见窗口，
+#    用户升级完就会看到一个挂在前台的黑框。守护进程改由 `jeik fetch` 按需无声拉起。
 if (-not $swapped) {
     $bat = Join-Path $env:TEMP 'jeik-selfupdate.cmd'
     @"
 @echo off
 ping -n 4 127.0.0.1 >nul
 move /Y "$StagedExe" "$TargetExe"
-start "" "$TargetExe" serve --host 127.0.0.1 --port $ServicePort
 "@ | Set-Content -Path $bat -Encoding ASCII
     Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$bat`"" -WindowStyle Hidden
     Write-Host "[*] jeik.exe 当前被占用，已安排在命令退出后自动完成替换。" -ForegroundColor Yellow
@@ -144,23 +143,19 @@ jeik fetch "<URL>" --dns "https://1.1.1.1/dns-query" -j 4
 Set-Content -Path (Join-Path $UniversalSkillDir "SKILL.md") -Value $SkillContent -Encoding UTF8
 Write-Host ($MsgSkill -f $UniversalSkillDir) -ForegroundColor Green
 
-# 4. 配置 Windows 登录自动常驻服务 (通过注册表 Run 键)
+# 4. 清理旧版注册的开机自启项（不再注册）
+# 旧安装器把 `jeik.exe serve` 写进 HKCU Run 键。控制台程序被资源管理器拉起时会得到
+# 一个**可见**的控制台窗口（Run 键无法指定 SW_HIDE），于是每次登录都挂着一个黑框，
+# 并常驻一个约 400MB 的 Chromium。1.2.2 起 CLI 已能按需拉起无窗口守护进程
+# （DETACHED_PROCESS + 空闲自动退出），因此这里只负责把历史遗留项删干净。
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$AppArgs = "`"$TargetExe`" serve --host 127.0.0.1 --port $ServicePort"
-Set-ItemProperty -Path $RunKey -Name "JeikWebFetchDaemon" -Value $AppArgs
-Write-Host ($MsgDaemonReg -f $ServicePort) -ForegroundColor Green
-
-# 5. 确保后台常驻服务在运行（二进制刚被替换时，上面的循环已把它停掉）
-# 若替换被安排在「命令退出后」，这里不能先启动旧二进制，否则会重新占用文件。
-$serveRunning = Get-CimInstance Win32_Process -Filter "Name='jeik.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match 'serve' }
-if (-not $serveRunning -and $swapped) {
-    Start-Process -FilePath $TargetExe -ArgumentList "serve --host 127.0.0.1 --port $ServicePort" -WindowStyle Hidden
-    Write-Host $MsgDaemonStart -ForegroundColor Green
+if (Get-ItemProperty -Path $RunKey -Name 'JeikWebFetchDaemon' -ErrorAction SilentlyContinue) {
+    Remove-ItemProperty -Path $RunKey -Name 'JeikWebFetchDaemon' -ErrorAction SilentlyContinue
+    Write-Host $MsgDaemonClean -ForegroundColor Green
 }
 
-if (-not $swapped) {
-    Write-Host "[!] 替换将在本命令退出后自动完成，新版本的 serve 也会由它拉起。" -ForegroundColor Yellow
-}
+# 5. 不在安装结束时拉起常驻服务：
+# - `jeik fetch` 首次需要浏览器时会自己拉起无窗口守护进程；
+# - 需要 HTTP API 时手动执行 `jeik serve --port $ServicePort`。
 
 Write-Host ($MsgComplete -f $ServicePort) -ForegroundColor Green

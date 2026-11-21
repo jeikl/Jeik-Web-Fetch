@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from ..core.models import ScrapeOptions, ScrapeResult, OutputFormat
 from ..core.engine import default_engine
+from ..core.updater import updater
 
 # 最近一次真实抓取活动时间。`--idle-exit` 的看门狗靠它判断能否退出。
 _LAST_ACTIVITY = [time.time()]
@@ -17,21 +18,51 @@ def _touch_activity() -> None:
     _LAST_ACTIVITY[0] = time.time()
 
 
+def _daemon_port() -> int:
+    """本守护监听的端口（槽位租约就按这个端口记账）。"""
+    for key in ("JEIK_SERVE_PORT", "PORT"):
+        raw = str(os.environ.get(key) or "").strip()
+        if raw.isdigit():
+            return int(raw)
+    return 8863
+
+
+def _slot_is_leased() -> bool:
+    """CLI 借用槽位走的是 CDP，不会刷新 `_LAST_ACTIVITY`；租约才是它的活跃信号。
+
+    租约文件里带着持有者 PID，所以 CLI 被强杀后会立刻变“死租约”，不会把守护
+    永久钉住；长抓取则由客户端的续租心跳保持新鲜。
+    """
+    from ..core import daemon_client as daemon_client
+
+    try:
+        return daemon_client._lease_alive(_daemon_port())
+    except Exception:
+        return False
+
+
+def _should_idle_exit(idle_secs: float) -> bool:
+    if not updater.is_idle():
+        return False
+    if _slot_is_leased():
+        # 有人正在用：把基准时间推到当下，本次用完后重新计满一个空闲窗口
+        _touch_activity()
+        return False
+    return time.time() - _LAST_ACTIVITY[0] >= idle_secs
+
+
 async def _idle_watchdog(idle_secs: float) -> None:
     """
     自动拉起（或带 `--idle-exit`）的守护进程：空闲超时后自行退出。
 
     `jeik fetch` 首次需要浏览器时会拉起一个后台守护；它不能永远占着内存，
-    所以空闲一段时间就把浏览器一并收掉退出。
+    所以空闲一段时间就把浏览器一并收掉退出。“空闲”同时看 HTTP 接口与槽位租约，
+    否则 CLI 正在用 CDP 抓取时会被误当成空闲而把浏览器杀掉。
     """
-    from ..core.updater import updater
-
     interval = max(5.0, min(30.0, idle_secs / 4.0))
     while True:
         await asyncio.sleep(interval)
-        if not updater.is_idle():
-            continue
-        if time.time() - _LAST_ACTIVITY[0] < idle_secs:
+        if not _should_idle_exit(idle_secs):
             continue
         print(f"[*] 空闲超过 {idle_secs:.0f}s，自动退出后台守护进程", flush=True)
         try:

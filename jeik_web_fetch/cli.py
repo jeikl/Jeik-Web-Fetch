@@ -12,6 +12,7 @@ import os
 import sys
 import io
 import shutil
+import time
 import argparse
 import asyncio
 import subprocess
@@ -392,6 +393,49 @@ def run_open_command(sub_args):
     else:
         safe_print(f"[-] {msg}", file=sys.stderr)
 
+def run_pool_command(sub_args):
+    """查看或停止按需拉起的浏览器槽位池"""
+    from .core import daemon_client as daemon_client
+
+    action = getattr(sub_args, "pool_action", "status") or "status"
+    port = getattr(sub_args, "port", None)
+
+    if action == "stop":
+        if port:
+            safe_print(f"[*] {daemon_client.stop_slot(port)}")
+            return
+        messages = daemon_client.stop_all_slots()
+        if not messages:
+            safe_print("[*] 池中没有运行中的槽位。")
+            return
+        for message in messages:
+            safe_print(f"[*] {message}")
+        return
+
+    rows = daemon_client.describe_slots()
+    if not rows:
+        safe_print("[*] 池中没有运行中的槽位（下一次 jeik fetch 会按需拉起）。")
+        safe_print(f"    池目录: {os.path.normpath(daemon_client.POOL_DIR)}")
+        return
+
+    safe_print("=" * 78)
+    safe_print("Jeik 浏览器槽位池 (Browser Slot Pool)")
+    safe_print("=" * 78)
+    now = time.time()
+    for row in rows:
+        last_used = row.get("last_used") or 0
+        age = f"{max(0, int(now - last_used))}s ago" if last_used else "unknown"
+        safe_print(
+            f"• 端口 {row['port']:<5} {row['role']:<6} pid={row['pid']:<7} "
+            f"proc={'alive' if row['alive'] else 'dead':<5} "
+            f"lease={'held' if row['leased'] else 'free':<5} "
+            f"health={row['health']:<12} idle_exit={row['idle_exit']}s last_used={age}"
+        )
+        safe_print(f"    profile: {row['profile']}")
+    safe_print("-" * 78)
+    safe_print("提示: `jeik pool stop` 全部停止，`jeik pool stop -p 8863` 只停一个。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     main_description = """Jeik CLI: High-Performance, Anti-Bot Web Scraper & Markdown Extraction Toolkit
 
@@ -411,7 +455,8 @@ Key Features (主要能力):
   jeik fetch "https://mimo.mi.com/docs/..." --common   # 抓取复杂文档与侧边栏超链接
   jeik fetch "https://www.zhihu.com/..." --complex     # 强反爬模式抓取知乎
   jeik open "https://xiaohongshu.com"                 # 弹窗扫码登录，随后运行 jeik fetch --active-tab
-  jeik fetch "url1" "url2" -j 4 --common              # 4 线程并发批量抓取"""
+  jeik fetch "url1" "url2" -j 4 --common              # 4 线程并发批量抓取
+  jeik pool status                                    # 查看按需拉起的浏览器槽位"""
 
     parser = argparse.ArgumentParser(
         prog="jeik",
@@ -631,10 +676,26 @@ Typical Command Combinations (推荐组合):
              "Used by daemons that `jeik fetch` auto-spawns.",
     )
 
-    # 5. jeik upgrade
+    # 5. jeik pool {status, stop} (查看/停止按需拉起的浏览器槽位池)
+    pool_parser = subparsers.add_parser(
+        "pool",
+        help="Inspect or stop the auto-spawned browser slot pool (查看/停止槽位池)",
+    )
+    pool_parser.add_argument(
+        "pool_action",
+        nargs="?",
+        choices=["status", "stop"],
+        default="status",
+        help="status (default) lists slots; stop terminates them",
+    )
+    pool_parser.add_argument(
+        "-p", "--port", type=int, default=None, help="Only act on this slot port (e.g. 8863)"
+    )
+
+    # 6. jeik upgrade
     subparsers.add_parser("upgrade", help="Check and upgrade jeik to the latest release version, then restart")
 
-    # 6. jeik uninstall [-y]
+    # 7. jeik uninstall [-y]
     uninstall_parser = subparsers.add_parser("uninstall", help="One-click uninstall jeik-web-fetch from system")
     uninstall_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
@@ -677,7 +738,7 @@ def main():
     parser = build_parser()
 
     # Shorthand: `jeik https://...` -> auto route to `fetch`
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in ["fetch", "tabs", "open", "login", "serve", "upgrade", "uninstall", "cookie", "browser", "help"]:
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-") and sys.argv[1] not in ["fetch", "tabs", "open", "login", "serve", "upgrade", "uninstall", "cookie", "browser", "pool", "help"]:
         sys.argv.insert(1, "fetch")
 
     args = parser.parse_args()
@@ -712,6 +773,8 @@ def main():
         run_cookie_command(args)
     elif args.command == "browser":
         run_browser_command(args)
+    elif args.command == "pool":
+        run_pool_command(args)
     elif args.command == "serve":
         guard_bind_host(args.host, getattr(args, "allow_public", False))
         # 按端口隔离常驻 profile，避免多个 serve 实例争用同一个 user-data-dir
