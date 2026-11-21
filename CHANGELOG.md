@@ -7,12 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.3.0] - 2026-11-21
+
+### Added
+- **`jeik pool status` / `jeik pool stop`**: inspect the on-demand browser slot pool (port, role, pid, process/lease state, daemon+browser health, idle TTL, profile path) or terminate it (`-p <port>` stops a single slot). A manually started `jeik serve` slot is reported and left alone.
+- **Lease heartbeat**: a borrowed slot's lease is refreshed every `JEIK_POOL_LEASE_REFRESH` (default 60s) while the scrape runs, so a fetch longer than the 300s lease TTL can no longer have its slot stolen by a concurrent call.
+
+### Changed
+- **The daemon's idle watchdog now counts CLI leases as activity**: `jeik fetch` uses the daemon's CDP port directly and never refreshed `_LAST_ACTIVITY`, so a daemon could exit 3600s after being spawned regardless of use — or mid-scrape in the worst case. The watchdog now treats a live lease as activity and restarts the idle window after the last use. Verified end-to-end: `--idle-exit 6` survives 14s while a lease is held and exits 13s after it is released.
 
 ### Fixed
+- **Technical-doc extraction generalized (verified against MiMo, MiniMax, DeepSeek, Volcengine Ark, Qwen, ai-x, opencode and GitHub)**:
+  - **SPA route drift**: exploratory clicks on links, or on sidebar category buttons that call `router.push`, could move the page to another document before extraction (MiniMax's API overview came out as “文生图”, and Qwen's sidebar links pulled in unrelated pages). Links are never clicked now, sidebar/nav expanders are skipped (their links are read from the DOM), every exploratory click verifies `location.href` and rolls back with `history.back()`, and an unrecoverable drift aborts the fetch instead of saving the wrong page.
+  - **Visible main**: the `<main>` / `[role=main]` / `<article>` with the largest visible area + text is extracted instead of the first `<main>`, so hidden cached routes cannot be captured.
+  - **Code fidelity**: Prism / Shiki / Docusaurus line containers are rebuilt line-by-line (DeepSeek's OpenAPI samples were flattened into a single line), the innermost line node is used so `code-block-lines` wrappers don't swallow the block, indentation and blank lines survive markdown spacing normalization, and untagged fences get a conservative language hint (curl/JSON/Python/Go/HTML/SQL/JS).
+  - **Tab discovery**: ARIA tabs, Docusaurus `li.tabs__item`, OpenAPI code-item classes and buttons are all considered; code is read from the clicked tab's own container and only from visible `pre` blocks, and identical content is skipped rather than mislabelled.
+  - **SPA settle**: the readiness poll now requires the body text length to be stable across consecutive samples, so mid-route transitions and hydration snapshots are not extracted.
+  - Both the scenario appendix and the multi-language code-sample appendix are emitted (previously mutually exclusive, which silently dropped one).
+  - `metadata.final_url` records the URL actually landed on, and `route_drift` is set when it differs from the start URL.
+- **`jeik fetch www.baidu.com` (scheme-less host) failed with a fabricated `net::ERR_CONNECTION_TIMED_OUT`**: the target was never reached. `httpx` raised `UnsupportedProtocol`, `Page.navigate` answered `Cannot navigate to invalid URL`, the tab stayed on `about:blank`, and the empty-content branch fabricated a network-timeout string.
+  - URLs are normalized at the single entry boundary (`ScrapeOptions` validator) and again in `ScrapeEngine.scrape_url`: bare hosts get `https://` (loopback/private hosts get `http://`), while absolute and opaque schemes (`about:`, `data:`, `file:`, `view-source:`) are left untouched.
+  - The real `Page.navigate` error (`error.message` / `errorText`) is captured, `chrome-error://` pages are detected instead of being converted into "successful" Markdown, and an empty page no longer claims a timeout.
+  - Regression tests in `tests/test_url_normalization.py`.
+- **Windows kept a console window running the daemon after an upgrade**: `scripts/install.ps1` registered `jeik.exe serve` in `HKCU\...\Run`, and the deferred self-replace used `start "" jeik.exe serve`. A console application launched by Explorer/Run gets a visible console, so every logon left a black window plus a ~400 MB Chromium.
+  - The installer no longer registers the logon daemon (and removes the legacy `JeikWebFetchDaemon` value); `jeik fetch` already spawns a windowless daemon on demand, and `jeik serve` stays available for the HTTP API.
+  - The deferred `cmd` only swaps the binary. The auto-spawned daemon keeps `DETACHED_PROCESS` and now also passes `STARTF_USESHOWWINDOW | SW_HIDE`, so a console cannot surface even if one is allocated.
+- **The `Python SDK` code tab on MiMo docs was dropped**: language tabs were matched by their exact uppercase label, so `Python SDK`, `Node.js` or `Go SDK` never matched and the whole sample was lost. Labels are now normalized through an alias map before collection, the code block is read from the clicked tab's own container instead of the last `<pre>` on the page, and identical content is skipped rather than mislabelled.
+- **The browser slot pool could wedge on a leftover persistent profile, turning every fetch into a 20s wait**: a daemon killed with `Stop-Process` leaves its Chromium owning `~/.jeik/engine_profile_<port>`. The replacement daemon's browser exits on the locked `user-data-dir`, `/health` never becomes ready, so every call paid the full `SPAWN_WAIT_SECS` and then fell back to a private engine (27.6s cold *and* warm, no slot registered).
+  - Starting a persistent-profile engine now reclaims any process still holding that profile (gated on `SingletonLock`/`lockfile`, so a clean start costs nothing).
+  - A daemon that exits during startup is detected via `poll()`, so the caller fails over immediately instead of waiting out the 20s.
+  - A spawned daemon that never becomes ready is now killed (`taskkill /T`) instead of being left unregistered with a prewarmed browser; a live-but-unresponsive slot is killed before its registry entry is dropped.
+  - Verified: MiMo docs fetch went from 27.6s cold / 27.6s warm to 11.8s cold / 5.6s warm, with the slot registered and reused.
+- **CLI fetches borrowed the daemon browser without isolation**: a one-shot `jeik fetch` attaching to the shared daemon could see that browser's accumulated sessions (and left its own cookies behind), so an anonymous fetch could return logged-in content. One-shot scrapes now run in a temporary CDP BrowserContext (`Target.createBrowserContext`) that is disposed afterwards; the daemon's own HTTP API keeps its persistent-profile semantics.
+- **Legacy temp profiles without an owner marker were never reclaimed on Windows**: `_profile_pids()` embedded the profile path in a PowerShell command line and then matched that command line against itself, so the sweep always believed the profile was still in use. The query now excludes its own `$PID`.
+  - Profile reclamation tests now run on Windows too (the fake browser was a `#!/bin/sh` script, which `CreateProcess` cannot execute — `WinError 193`).
 - **Windows self-upgrade failed with `Move-Item : Cannot create a file when that file already exists`**: Windows PowerShell 5.1's `Move-Item -Force` cannot overwrite an existing destination, and the previous fallback renamed the running `jeik.exe` to a **fixed** `jeik.exe.old`, which failed silently whenever a stale backup from an earlier attempt was still on disk — so the second move hit the original file again.
   - The backup name now carries a timestamp (`jeik.exe.old-<yyyyMMddHHmmss>`), stale `.new`/`.old-*` files are swept first, and every step checks its result instead of relying on a swallowed exception.
-  - When the binary is still locked (AV/EDR), the installer schedules a detached `cmd` that replaces it 3 seconds later and starts the new `serve`, so the upgrade completes right after the CLI exits.
+  - When the binary is still locked (AV/EDR), the installer schedules a detached `cmd` that replaces it 3 seconds later, so the upgrade completes right after the CLI exits.
 
 ---
 

@@ -130,6 +130,13 @@ jeik cookie list
 jeik serve --port 8863
 ```
 
+#### 查看 / 停止按需拉起的浏览器池：
+```bash
+jeik pool status            # 端口、PID、租约、浏览器健康状态、profile 路径
+jeik pool stop              # 停掉所有自动拉起的槽位
+jeik pool stop -p 8863      # 只停一个
+```
+
 #### 一键自卸载：
 ```bash
 jeik uninstall -y

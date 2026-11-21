@@ -6,6 +6,27 @@
 
 ---
 
+## [1.3.0] - 2026-11-21
+
+### 新增 (Added)
+- **`jeik pool status` / `jeik pool stop`**：查看或停止按需拉起的浏览器槽位池（端口、角色、PID、进程/租约状态、守护与浏览器健康、空闲 TTL、profile 路径）；手工启动的 `jeik serve` 只提示、不误杀。
+- **租约心跳**：借出槽位期间按 `JEIK_POOL_LEASE_REFRESH`（默认 60s）续租，超过 300s 的长抓取不会再被并发调用当成空闲槽抢走。
+
+### 优化与修复 (Changed & Fixed)
+- **守护的空闲看门狗把 CLI 租约视为活动**：`jeik fetch` 走的是 CDP，不刷新 `_LAST_ACTIVITY`，以前可能在一个小时后、甚至抓取中途把浏览器收掉；现在按“最后一次使用”重新计满空闲窗口。
+- **技术文档抓取通用化**（MiMo / MiniMax / DeepSeek / 火山 Ark / 千问 / ai-x / opencode / GitHub 实测）：
+  - SPA 路由漂移防护：探索阶段不再点击链接与侧边栏展开器，每次点击校验 `location.href` 并 `history.back()`，无法恢复则放弃抓取而不是保存错误页面（MiniMax 接口概览曾被抽成「文生图」）。
+  - 按可见面积 + 文本量选择 `<main>`，不会抽到隐藏的旧路由。
+  - 代码块按行容器逐行重建（Prism / Shiki / Docusaurus），保留缩进与空行；无 `language-*` 标注时做保守语言推断。
+  - Tab 识别覆盖 ARIA、Docusaurus `.tabs__item`、OpenAPI 代码项；只取当前可见代码块，重复内容不贴错语言。
+  - 正文长度连续两次不变才算渲染完成；「场景示例」与「多语言代码示例」两个附录同时输出。
+- **裸域名自动补全 scheme**：公网默认 https（显式 `:80` 为 http），本机/内网/无点号主机名默认 http；导航失败报告真实原因，不再伪造 `ERR_CONNECTION_TIMED_OUT`。
+- **CLI 借用守护浏览器时使用临时 BrowserContext**：Cookie / Storage 完全隔离，用完即销毁。
+- **Windows 安装器不再注册开机常驻黑窗**：删除旧版 `HKCU\...\Run` 自启项，守护改为按需无窗口拉起（`DETACHED_PROCESS` + `SW_HIDE`），并回收仍占用常驻 profile 的孤儿浏览器。
+- **修复 Windows 上遗留 profile 永不清理**：`_profile_pids` 的 PowerShell 查询会匹配到自己，导致无 owner 标记的老目录一直被判定为“仍在使用”。
+
+---
+
 ## [1.2.1] - 2026-10-31
 
 ### 修复 (Fixed)

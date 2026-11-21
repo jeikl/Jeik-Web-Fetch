@@ -129,6 +129,13 @@ jeik cookie list
 jeik serve --port 8863
 ```
 
+#### Inspect / Stop the On-Demand Browser Pool:
+```bash
+jeik pool status            # ports, PIDs, leases, browser health, profile paths
+jeik pool stop              # stop every auto-spawned slot
+jeik pool stop -p 8863      # stop one slot
+```
+
 #### Self-Uninstall:
 ```bash
 jeik uninstall -y
