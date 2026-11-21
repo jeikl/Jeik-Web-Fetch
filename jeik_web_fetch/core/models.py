@@ -1,6 +1,8 @@
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .urls import normalize_target_url
 
 class OutputFormat(str, Enum):
     MARKDOWN = "markdown"
@@ -16,7 +18,7 @@ class FetchMode(str, Enum):
     COMPLEX = "complex" # 适合风控严格网站 (知乎、小红书等需防风控对抗或外部浏览器接管)
 
 class ScrapeOptions(BaseModel):
-    url: str = Field(..., description="目标网页绝对 URL")
+    url: str = Field(..., description="目标网页绝对 URL (省略 scheme 时会自动补全)")
     formats: List[OutputFormat] = Field(default=[OutputFormat.MARKDOWN], description="输出格式列表")
     waitFor: float = Field(default=2.0, description="页面渲染初始缓冲时间 (秒)")
     timeout: float = Field(default=25.0, description="请求超时时间 (秒)")
@@ -66,6 +68,12 @@ class ScrapeOptions(BaseModel):
         default=FetchMode.FAST,
         description="抓取分类模式: 'fast' (默认, 静态极速探针), 'common' (复杂JS文档/无头渲染), 'complex' (高风控/深度防风控对抗)"
     )
+
+    @field_validator("url")
+    @classmethod
+    def _normalize_url(cls, value: str) -> str:
+        """裸域名（www.example.com）在这里补全，CLI / HTTP API / SDK 同一入口。"""
+        return normalize_target_url(value)
 
 class ScrapeResult(BaseModel):
     success: bool

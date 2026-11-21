@@ -14,6 +14,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import time
 
 import pytest
@@ -31,6 +32,21 @@ def _free_port() -> int:
 def _fake_browser(tmp_path, pid_name: str = "browser.pid"):
     """造一个永远不会打开 CDP 端口的假浏览器：记录自身 PID 后睡死。"""
     pid_file = tmp_path / pid_name
+    if os.name == "nt":
+        helper = tmp_path / "fake_browser.py"
+        helper.write_text(
+            "import os, pathlib, time\n"
+            f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+            "time.sleep(60)\n",
+            encoding="utf-8",
+        )
+        script = tmp_path / "fake_browser.cmd"
+        script.write_text(
+            "@echo off\r\n" + f'"{sys.executable}" "{helper}" %*\r\n',
+            encoding="ascii",
+        )
+        return script, pid_file
+
     script = tmp_path / "fake_browser.sh"
     script.write_text(
         "#!/bin/sh\n"
@@ -52,13 +68,8 @@ def _wait_for(predicate, timeout: float = 5.0) -> bool:
 
 
 def _is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    # Windows 上 os.kill(pid, 0) 不是空操作（WinError 87），统一走引擎的跨平台判断
+    return engine_mod._process_alive(pid)
 
 
 def test_failed_start_reaps_browser_and_profile(tmp_path, monkeypatch):
@@ -113,11 +124,9 @@ def test_stop_reaps_running_browser(tmp_path):
     engine = ScrapeEngine(port=_free_port())
     profile = tmp_path / "profile"
     profile.mkdir()
-    pid_file = tmp_path / "stop.pid"
+    script, _ = _fake_browser(tmp_path, "stop.pid")
 
-    proc = subprocess.Popen(
-        ["/bin/sh", "-c", f'echo $$ > "{pid_file}"; exec sleep 60']
-    )
+    proc = subprocess.Popen([str(script)])
     engine.process = proc
     engine.tmp_dir = str(profile)
 
@@ -144,6 +153,11 @@ def test_lifespan_reaps_when_prewarm_fails(monkeypatch):
 
     monkeypatch.setattr(routes.default_engine, "ensure_started", boom)
     monkeypatch.setattr(routes.default_engine, "stop", fake_stop)
+    # lifespan 会调用 use_persistent_profile()，不要让它污染进程级 default_engine，
+    # 否则后续用例会继承持久化 profile（跳过 Cookie 清理，测试相互串味）。
+    monkeypatch.setattr(
+        routes.default_engine, "use_persistent_profile", lambda path=None: None
+    )
 
     async def run():
         async with routes.lifespan(routes.app):

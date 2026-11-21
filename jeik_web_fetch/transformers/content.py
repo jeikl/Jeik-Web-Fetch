@@ -1,9 +1,133 @@
 import re
+import json
 from typing import List, Dict, Tuple, Any, Optional
 from bs4 import BeautifulSoup
 from ..core.models import OutputFormat
 
 from urllib.parse import urljoin
+
+
+# 逐行渲染的代码高亮容器（Prism / Shiki / Docusaurus / 自研组件）：
+# 每一行是一个元素、行与行之间没有换行文本节点，get_text() 会拼成一整行。
+_CODE_LINE_CLASS_HINTS = (
+    "token-line", "code-line", "codeline", "codeblock-line", "code-block-line",
+    "shiki-line", "line-content", "highlight-line", "prism-line",
+)
+_LINE_IGNORE_HINTS = ("number", "gutter", "lineno", "line-no", "absolute")
+
+
+def _is_line_node(tag) -> bool:
+    class_attr = tag.get("class") or []
+    tokens = class_attr if isinstance(class_attr, list) else str(class_attr).split()
+    for token in tokens:
+        low = token.lower()
+        if any(skip in low for skip in _LINE_IGNORE_HINTS):
+            continue
+        if low == "line" or any(hint in low for hint in _CODE_LINE_CLASS_HINTS):
+            return True
+    return False
+
+
+def _pre_text(pre) -> str:
+    """取 <pre> 的代码文本：优先按行元素重建换行，否则回退到 get_text()。"""
+    line_nodes = [tag for tag in pre.find_all(True) if _is_line_node(tag)]
+
+    if line_nodes:
+        # 取**最内层**行节点：外层往往是 `code-block-lines` 容器，
+        # 它的 get_text() 会把所有行拼成一行（DeepSeek OpenAPI 示例就这样被拍平）。
+        selected = [
+            node for node in line_nodes
+            if not any(other is not node and node in other.parents for other in line_nodes)
+        ]
+        return "\n".join(
+            node.get_text().replace("\xa0", " ").rstrip() for node in selected
+        )
+    return pre.get_text().replace("\xa0", " ")
+
+
+def _clean_code_text(code_text: str) -> str:
+    lines = [line.rstrip() for line in code_text.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # 某些高亮器会把首行再包一层同名行，去掉重复首行
+    if len(lines) > 2:
+        first = lines[0].strip().replace(" ", "")
+        second = lines[1].strip().replace(" ", "")
+        if first and first == second:
+            lines = lines[1:]
+    return "\n".join(lines)
+
+
+def infer_code_language(code_text: str) -> str:
+    """只在代码块没有 language-* 标注时做保守推断，宁可留空也不乱标。"""
+    text = (code_text or "").lstrip()
+    if not text:
+        return ""
+    if text[0] in "{[":
+        try:
+            json.loads(text)
+            return "json"
+        except Exception:
+            pass
+
+    first = text.splitlines()[0].strip()
+    if first.startswith(("curl ", "$ curl")):
+        return "bash"
+    if first.startswith(("#!/bin/", "$ ", "sudo ", "apt ", "npm ", "pnpm ",
+                         "yarn ", "git ", "docker ", "pip ", "uv ")):
+        return "bash"
+    if re.match(r"^from\s+[\w.]+\s+import\s+", text) or re.match(r"^import\s+[\w.]+\s*$", first):
+        return "python"
+    if re.match(r"^(async\s+)?def\s+\w+\(", text):
+        return "python"
+    if first.startswith(("package main", "func ")):
+        return "go"
+    if first.lower().startswith(("<!doctype html", "<html")):
+        return "html"
+    if re.match(r"^select\b", text, re.I) and re.search(r"\bfrom\b", text, re.I):
+        return "sql"
+    if first.startswith(("const ", "let ", "var ", "function ", "export ")):
+        return "javascript"
+    return ""
+
+
+def _fence_language(pre, code_text: str) -> str:
+    for node in (pre, pre.find("code")):
+        if node is None:
+            continue
+        classes = node.get("class") or []
+        for name in (classes if isinstance(classes, list) else str(classes).split()):
+            if name.startswith("language-"):
+                return name[len("language-"):]
+            match = re.fullmatch(r"(?:lang|highlight)-(\w+)", name)
+            if match:
+                return match.group(1)
+    return infer_code_language(code_text)
+
+
+def _normalize_markdown_spacing(text: str) -> str:
+    """只压缩围栏代码块**之外**的空格与空行：代码里的缩进/空行是语义的一部分。"""
+    parts = re.split(r"(```[^\n]*\n.*?```)", text, flags=re.S)
+    for index in range(0, len(parts), 2):
+        chunk = re.sub(r"[ \t]+", " ", parts[index])
+        chunk = re.sub(r"\n\s*\n\s*\n+", "\n\n", chunk)
+        parts[index] = chunk
+    return "".join(parts)
+
+
+def _normalize_sample_code(code: str) -> str:
+    """
+    修正部分高亮器 innerText 的双换行：它们把每个行元素都当成块级节点，
+    取文本后变成“每行后多一个空行”。仅当空行占比异常高时才压缩，
+    避免误伤真正带空行的代码。
+    """
+    lines = code.split("\n")
+    blanks = sum(1 for line in lines if not line.strip())
+    if lines and blanks > len(lines) / 3:
+        code = re.sub(r"\n{2,}", "\n", code)
+    return code
 
 class ContentTransformer:
     """
@@ -421,14 +545,14 @@ class ContentTransformer:
             # 执行 Markdown 结构化转换
             work_soup = BeautifulSoup(str(soup), "html.parser")
 
-            # 1. 代码块
+            # 1. 代码块：按行元素重建换行，并保留缩进/空行（技术文档里代码即内容）
             for pre in work_soup.find_all("pre"):
-                code_text = pre.get_text().replace("\xa0", " ").strip()
-                lines = [ln.strip() for ln in code_text.splitlines() if ln.strip()]
-                if len(lines) > 2 and lines[0].replace(" ", "") == lines[1].replace(" ", ""):
-                    lines = lines[1:]
-                clean_code = "\n".join(lines)
-                pre.replace_with(f"\n\n```\n{clean_code}\n```\n\n")
+                code_text = _clean_code_text(_pre_text(pre))
+                if not code_text:
+                    pre.decompose()
+                    continue
+                fence = _fence_language(pre, code_text)
+                pre.replace_with(f"\n\n```{fence}\n{code_text}\n```\n\n")
 
             # 2. 格式化 OpenAPI / Swagger 参数列表 (结构化解析，避免字段类型与描述挤在单行)
             for item in work_soup.find_all(class_=lambda c: c and any(k in str(c) for k in ["openapi-schema__list-item", "schema-property"])):
@@ -493,9 +617,7 @@ class ContentTransformer:
                     full_href = urljoin(base_url, href) if base_url else href
                     a.replace_with(f"[{text}]({full_href})")
 
-            md_text = work_soup.get_text()
-            md_text = re.sub(r"[ \t]+", " ", md_text)
-            md_text = re.sub(r"\n\s*\n\s*\n+", "\n\n", md_text)
+            md_text = _normalize_markdown_spacing(work_soup.get_text())
             # 清除可能残留于文档末尾的孤立 Loading 占位符
             md_text = re.sub(r"(?:\n\s*)+\b(?:Loading\.\.\.|加载中\.\.\.)\s*$", "", md_text, flags=re.I)
             
@@ -504,8 +626,8 @@ class ContentTransformer:
                 sc_lines = ["\n\n---\n\n## 💻 场景与代码示例 (Code Samples & Scenarios)\n"]
                 for sc in scenarios:
                     name = sc.get("scenario", "").strip()
-                    req = sc.get("requestCode", "").strip()
-                    res = sc.get("responseJson", "").strip()
+                    req = _normalize_sample_code(sc.get("requestCode", "").strip())
+                    res = _normalize_sample_code(sc.get("responseJson", "").strip())
                     sc_lines.append(f"\n### 场景：{name}\n")
                     if req:
                         fence = "bash" if "curl" in req.lower() else ""
@@ -513,12 +635,15 @@ class ContentTransformer:
                     if res:
                         sc_lines.append(f"\n#### 响应示例 (Response)\n\n```json\n{res}\n```\n")
                 md_text += "\n".join(sc_lines)
-            elif code_samples:
+            if code_samples:
                 code_lines = ["\n\n---\n\n## 💻 代码示例与多语言 SDK (Code Samples)\n"]
                 for s in code_samples:
                     lang = s.get("language", "cURL").strip()
-                    code = s.get("code", "").strip()
-                    fence = "bash" if lang.upper() in ["CURL", "SHELL", "BASH"] else lang.lower()
+                    code = _normalize_sample_code(s.get("code", "").strip())
+                    fence = {
+                        "CURL": "bash", "SHELL": "bash", "BASH": "bash",
+                        "C#": "csharp", "NODE.JS": "javascript", "NODEJS": "javascript",
+                    }.get(lang.upper(), lang.lower())
                     code_lines.append(f"\n### {lang}\n\n```{fence}\n{code}\n```\n")
                 md_text += "\n".join(code_lines)
 

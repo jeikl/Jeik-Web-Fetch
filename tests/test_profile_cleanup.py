@@ -7,6 +7,7 @@
 
 import os
 import stat
+import sys
 import time
 import socket
 import asyncio
@@ -108,6 +109,24 @@ def _free_port() -> int:
 def _capturing_browser(tmp_path):
     """假浏览器：把收到的参数写进文件，然后睡死（永远不打开 CDP 端口）。"""
     args_file = tmp_path / "argv.txt"
+    if os.name == "nt":
+        # Windows 上 CreateProcess 不能执行 `#!/bin/sh` 脚本（WinError 193），
+        # 用 python 助手 + .cmd 外壳，保证这些泄露回归用例在 Windows 本机也能跑。
+        helper = tmp_path / "fake_browser.py"
+        helper.write_text(
+            "import pathlib, sys, time\n"
+            f"pathlib.Path({str(args_file)!r}).write_text('\\n'.join(sys.argv[1:]), encoding='utf-8')\n"
+            "time.sleep(60)\n",
+            encoding="utf-8",
+        )
+        script = tmp_path / "capturing_browser.cmd"
+        script.write_text(
+            "@echo off\r\n"
+            f'"{sys.executable}" "{helper}" %*\r\n',
+            encoding="ascii",
+        )
+        return script, args_file
+
     script = tmp_path / "capturing_browser.sh"
     script.write_text(
         "#!/bin/sh\n"

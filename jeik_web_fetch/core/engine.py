@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -10,6 +11,7 @@ import shutil
 import threading
 import subprocess
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -22,6 +24,7 @@ from .cookies import CookieHelper, default_cookie_store
 from .browser_mgr import browser_mgr
 from .updater import updater
 from .resources import process_alive as _process_alive
+from .urls import is_navigable_url, normalize_target_url
 from ..browser import find_system_browser
 from ..transformers.content import ContentTransformer
 from ..storage.manager import default_storage
@@ -42,6 +45,30 @@ def _browser_start_timeout() -> float:
         except (TypeError, ValueError):
             pass
     return DEFAULT_BROWSER_START_TIMEOUT_SECS
+
+
+# Chrome 错误页 / CDP 报错里出现的网络错误代号
+_NET_ERROR_RE = re.compile(r"(?:net::)?ERR_[A-Z0-9_]+")
+
+
+def net_error_code(text: Optional[str]) -> Optional[str]:
+    """从错误页正文或 CDP 应答中提取真实错误代号（如 ERR_NAME_NOT_RESOLVED）。"""
+    match = _NET_ERROR_RE.search(text or "")
+    return match.group(0) if match else None
+
+
+def navigation_failure_message(url: str, detail: Optional[str]) -> str:
+    """把导航结果翻译成一句能直接指导用户的话，不再伪造 ERR_CONNECTION_TIMED_OUT。"""
+    if detail:
+        return (
+            f"Navigation failed for {url}: {detail}. "
+            f"Check the URL scheme, DNS/proxy settings, or whether the host is reachable."
+        )
+    return (
+        f"Browser loaded {url} but no readable content was extracted "
+        f"(empty SPA shell, login wall or anti-bot challenge). "
+        f"Try --common / --complex, or `jeik open <url>` + `jeik fetch --active-tab`."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -174,10 +201,14 @@ def _profile_pids(profile_dir: str) -> List[int]:
 
     if os.name == "nt":
         escaped = needle.replace("'", "''")
+        # 必须排除查询进程自身：PowerShell 的命令行里就带着这段 needle，
+        # 否则每次都会命中自己，无 owner 标记的遗留 profile 永远清不掉。
         script = (
-            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
-            f"$_.CommandLine.Contains('{escaped}') }} | "
-            "Select-Object -ExpandProperty ProcessId"
+            "$self = $PID; "
+            "Get-CimInstance Win32_Process | Where-Object { "
+            "$_.ProcessId -ne $self -and $_.CommandLine -and "
+            f"$_.CommandLine.Contains('{escaped}') "
+            "} | Select-Object -ExpandProperty ProcessId"
         )
         try:
             result = subprocess.run(
@@ -417,6 +448,18 @@ class ScrapeEngine:
                 os.makedirs(self.profile_dir, exist_ok=True)
                 user_data_dir = self.profile_dir
                 self.tmp_dir = None
+                # 上一次守护被强杀（安装器 Stop-Process / 任务管理器）后，它拉起的
+                # Chromium 可能还活着并占着这个 profile。新浏览器会因 user-data-dir
+                # 被占用而直接退出，/health 永远不就绪 —— 于是每次抓取都白等一个
+                # SPAWN_WAIT 再降级到私有实例（实测 28s 全花在这里）。
+                # 启动这一刻常驻 profile 还没有合法持有者，凡是还在用它的都是孤儿。
+                # Windows 上 Chrome 用 `lockfile`，POSIX 用 `SingletonLock`。
+                if any(
+                    os.path.exists(os.path.join(user_data_dir, marker))
+                    for marker in ("SingletonLock", "lockfile")
+                ):
+                    _kill_processes(_profile_pids(user_data_dir))
+                    time.sleep(0.2)
             else:
                 user_data_dir = tempfile.mkdtemp(prefix=_PROFILE_PREFIX)
                 self.tmp_dir = user_data_dir
@@ -662,14 +705,138 @@ class ScrapeEngine:
         """
         return external_cdp is not None or self.profile_dir is not None
 
+    @staticmethod
+    async def _navigation_error(ws, timeout: Optional[float]) -> Optional[str]:
+        """
+        读取 `Page.navigate` 的应答，返回真实失败原因（无效 URL / net::ERR_*）。
+
+        忽略这条应答会让失败导航一路走到「提取成功但正文为空」，最后被误报成
+        `ERR_CONNECTION_TIMED_OUT`——与真实原因（例如裸域名缺 scheme）完全无关。
+        """
+        deadline = time.monotonic() + max(1.0, min(float(timeout or 10.0), 15.0))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                msg_str = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            except Exception:
+                return None
+            try:
+                msg = json.loads(msg_str)
+            except (TypeError, ValueError):
+                continue
+            if msg.get("id") != 107:
+                continue
+            error = msg.get("error")
+            if isinstance(error, dict):
+                return str(error.get("message") or "navigation rejected")
+            error_text = (msg.get("result") or {}).get("errorText")
+            return str(error_text) if error_text else None
+
+    @staticmethod
+    async def _create_isolated_context(cdp_base: str) -> Optional[tuple]:
+        """
+        在共享（守护进程）浏览器里开一个临时 BrowserContext。
+
+        CLI 借用守护浏览器时，如果没有隔离上下文，就会直接吃到守护 profile 里
+        历史登录态，本次注入的 Cookie 也会留在共享 profile 里。临时上下文关掉后
+        Cookie / Storage 一并销毁，既不泄露也不污染。
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                version = (await client.get(f"{cdp_base}/json/version", timeout=3.0)).json()
+            browser_ws = version.get("webSocketDebuggerUrl")
+            if not browser_ws:
+                return None
+
+            context_id = None
+            target_id = None
+            async with websockets.connect(browser_ws, max_size=8 * 1024 * 1024) as ws:
+                await ws.send(json.dumps({"id": 501, "method": "Target.createBrowserContext"}))
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                    if msg.get("id") == 501:
+                        context_id = (msg.get("result") or {}).get("browserContextId")
+                        break
+                if not context_id:
+                    return None
+
+                await ws.send(json.dumps({
+                    "id": 502,
+                    "method": "Target.createTarget",
+                    "params": {"url": "about:blank", "browserContextId": context_id}
+                }))
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline:
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                    if msg.get("id") == 502:
+                        target_id = (msg.get("result") or {}).get("targetId")
+                        break
+            if not target_id:
+                return None
+
+            # 目标刚创建时页面 ws 可能尚未注册，等它出现在 /json/list 里再连接
+            async with httpx.AsyncClient() as client:
+                for _ in range(20):
+                    try:
+                        listing = (await client.get(f"{cdp_base}/json/list", timeout=2.0)).json()
+                    except Exception:
+                        listing = []
+                    if any(item.get("id") == target_id for item in listing):
+                        break
+                    await asyncio.sleep(0.1)
+
+            netloc = urlparse(cdp_base).netloc or "127.0.0.1:9527"
+            return target_id, f"ws://{netloc}/devtools/page/{target_id}", context_id
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _dispose_context(cdp_base: str, context_id: str) -> None:
+        """关闭临时 BrowserContext（同时关闭它里面的 Target 并删掉 Cookie/Storage）。"""
+        try:
+            async with httpx.AsyncClient() as client:
+                version = (await client.get(f"{cdp_base}/json/version", timeout=3.0)).json()
+            browser_ws = version.get("webSocketDebuggerUrl")
+            if not browser_ws:
+                return
+            async with websockets.connect(browser_ws, max_size=8 * 1024 * 1024) as ws:
+                await ws.send(json.dumps({
+                    "id": 503,
+                    "method": "Target.disposeBrowserContext",
+                    "params": {"browserContextId": context_id}
+                }))
+                await asyncio.wait_for(ws.recv(), timeout=5)
+        except Exception:
+            pass
+
     async def scrape_url(self, options: ScrapeOptions) -> ScrapeResult:
         updater.enter_task()
         target_id = None
         cdp_base = None
+        final_href = ""
+        start_href = ""
+        drift_href = ""
         should_close_tab = False
+        dispose_context: Optional[str] = None
         shared_engine = False
         t0 = time.time()
         try:
+            # 统一入口再归一一次：HTTP API / SDK 可能绕过 CLI 直接构造 options。
+            options.url = normalize_target_url(options.url)
+            if not is_navigable_url(options.url):
+                return ScrapeResult(
+                    success=False,
+                    url=options.url,
+                    error=(
+                        f"Invalid target URL: {options.url!r}. "
+                        f"Provide an absolute URL such as https://example.com/path."
+                    ),
+                    elapsed_seconds=round(time.time() - t0, 2)
+                )
+
             # 模式策略自适配 (--fast / --common / --complex)
             from .models import FetchMode
             if options.mode == FetchMode.COMMON:
@@ -778,12 +945,21 @@ class ScrapeEngine:
                     if matched.get("url") and (not options.url or options.url == "about:blank"):
                         options.url = matched["url"]
                 else:
-                    # 在浏览器中预先创建干净空白页，以便在页面导航前完整注入反爬脚本与登录态 Cookie
-                    new_tab = await client.put(f"{cdp_base}/json/new?about:blank", timeout=10)
-                    tab_info = new_tab.json()
-                    target_id = tab_info["id"]
-                    ws_url = tab_info["webSocketDebuggerUrl"]
-                    should_close_tab = True
+                    # 借用守护进程的浏览器（CLI 一次性抓取）时，先在临时 BrowserContext 里
+                    # 建标签页：隔离 Cookie/Storage，不继承也不污染共享 profile。
+                    isolated = None
+                    if external_cdp and not self.profile_dir:
+                        isolated = await self._create_isolated_context(cdp_base)
+                    if isolated:
+                        target_id, ws_url, dispose_context = isolated
+                        should_close_tab = False  # 由 disposeBrowserContext 一并关闭
+                    else:
+                        # 在浏览器中预先创建干净空白页，以便在页面导航前完整注入反爬脚本与登录态 Cookie
+                        new_tab = await client.put(f"{cdp_base}/json/new?about:blank", timeout=10)
+                        tab_info = new_tab.json()
+                        target_id = tab_info["id"]
+                        ws_url = tab_info["webSocketDebuggerUrl"]
+                        should_close_tab = True
 
             async with websockets.connect(ws_url, max_size=50 * 1024 * 1024) as ws:
                 # 1. 开启 Network 与 Page 域
@@ -837,23 +1013,34 @@ class ScrapeEngine:
                     }))
 
                 # 5. 导航到目标网页 (如果是接管已打开的活跃页面且未强制跳转，则跳过 navigate)
+                nav_error: Optional[str] = None
                 if not options.attach_tab or (options.url and options.url != "about:blank"):
                     await ws.send(json.dumps({
                         "id": 107,
                         "method": "Page.navigate",
                         "params": {"url": options.url}
                     }))
+                    nav_error = await self._navigation_error(ws, options.timeout)
 
                 # 6. 动态智能内容就绪侦听 (Dynamic Content Settle)
                 # 替代固定的 sleep 傻等，只要页面出现实质文字且脱离 Loading 状态，立即提前进入提取！
+                # 同时识别 chrome-error:// 错误页：它也能转出文字，但那是浏览器的报错页，必须判失败。
                 poll_js = r"""
                 (() => {
                     const text = document.body ? document.body.innerText : "";
-                    const hasSubstance = text.length > 500 && !text.includes("Loading...");
-                    return hasSubstance;
+                    return {
+                        href: location.href,
+                        errorPage: location.protocol === "chrome-error:",
+                        errorText: text.slice(0, 400),
+                        textLen: text.length,
+                        hasSubstance: text.length > 500 && !text.includes("Loading...")
+                    };
                 })()
                 """
                 settled = False
+                page_state: Dict[str, Any] = {}
+                stable_hits = 0
+                last_len = -1
                 max_polls = int(options.waitFor * 10)
                 for _ in range(max_polls):
                     await asyncio.sleep(0.1)
@@ -868,18 +1055,66 @@ class ScrapeEngine:
                             msg_str = await asyncio.wait_for(ws.recv(), timeout=0.5)
                             msg_obj = json.loads(msg_str)
                             if msg_obj.get("id") == 888:
-                                if msg_obj.get("result", {}).get("result", {}).get("value") is True:
+                                value = msg_obj.get("result", {}).get("result", {}).get("value")
+                                if isinstance(value, dict):
+                                    page_state = value
+                                    length = int(value.get("textLen") or 0)
+                                    if value.get("hasSubstance"):
+                                        # 正文长度连续两次不变才算稳定：SPA 路由切换/
+                                        # 水合过程中长度会跳变，只看“超过 500 字”会抽到上一页。
+                                        stable_hits = stable_hits + 1 if length == last_len else 1
+                                        settled = stable_hits >= 2
+                                    last_len = length
+                                elif value is True:  # 兼容旧格式应答
                                     settled = True
                                 break
                     except (asyncio.TimeoutError, Exception):
                         pass
-                    if settled:
+                    if settled or page_state.get("errorPage"):
                         break
+
+                # 浏览器直接停在错误页：这里立即给出真实代号，不把报错页当成正文
+                if page_state.get("errorPage"):
+                    detail = nav_error or net_error_code(page_state.get("errorText")) or page_state.get("href")
+                    return ScrapeResult(
+                        success=False,
+                        url=options.url,
+                        error=navigation_failure_message(options.url, detail),
+                        elapsed_seconds=round(time.time() - t0, 2)
+                    )
 
                 # 4. 深度交互探索 (若开启 deep_explore)
                 dom_extract_js = r"""
                 (async () => {
                     const extractedDrawers = [];
+
+                    // 探索阶段的点击只允许“展开 / 切换”，绝不能真的跳转：
+                    // 合成 click 在 <a> 上依然会触发默认导航，会把 SPA 带到别的路由
+                    // （MiniMax 的文档页就这样被带到了「文生图」），因此统一拦截。
+                    const START_URL = location.href;
+                    // 探索点击后若站点自己 router.push 到别的路由（MiniMax 侧边栏就这样），
+                    // history.back() 回原页；恢复不了就停止这类点击，避免整页抽错。
+                    let routeDrift = false;
+                    const recoverRoute = async () => {
+                        for (let i = 0; i < 2 && location.href !== START_URL; i++) {
+                            try { history.back(); } catch (e) {}
+                            await new Promise(r => setTimeout(r, 450));
+                        }
+                        return location.href === START_URL;
+                    };
+                    const safeClick = async (el, settleMs = 40) => {
+                        if (!el || routeDrift) return false;
+                        // 链接（或链接内部节点）一律不点：preventDefault 挡不住 router.push
+                        if (el.tagName === "A" || el.closest("a")) return false;
+                        const before = location.href;
+                        try {
+                            el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                        } catch (e) { return false; }
+                        await new Promise(r => setTimeout(r, settleMs));
+                        if (location.href === before) return true;
+                        if (!(await recoverRoute())) routeDrift = true;
+                        return false;
+                    };
 
                     // 1. 全容器平滑步进滚动（同时覆盖 window、main 以及所有内部滚动容器，彻底触发异步请求与懒加载）
                     const scrollables = [
@@ -904,31 +1139,31 @@ class ScrapeEngine:
                     // 彻底展开：原生 details、展开子属性、Body参数、响应参数、aria-expanded="false" 按钮
                     for (let pass = 0; pass < 3; pass++) {
                         document.querySelectorAll("details:not([open])").forEach(d => d.setAttribute("open", "true"));
-                        document.querySelectorAll("[aria-expanded='false']").forEach(btn => {
-                            try { btn.click(); } catch(e) {}
-                        });
+                        // 侧边栏的分类头经常同时承担“跳到该分类首页”的职责；
+                        // 这些区域直接不点（导航链接仍会从 DOM 里收集），
+                        // 只展开正文里的折叠项（参数表、FAQ 等）。
+                        const chromeSelector = "nav, aside, header, footer, [role='navigation'], [class*='sidebar'], [class*='menu']";
+                        const expanders = Array.from(document.querySelectorAll("[aria-expanded='false']"))
+                            .filter(el => !el.closest(chromeSelector));
+                        for (const btn of expanders.slice(0, 30)) {
+                            if (routeDrift) break;
+                            await safeClick(btn);
+                        }
                         const toggles = Array.from(document.querySelectorAll("button, [role='button'], span, div, a")).filter(el => {
                             const txt = (el.innerText || "").trim();
                             return /^(展开|展开子属性|显示全部|更多|View more|Expand|Show more)$/i.test(txt) && el.children.length <= 1;
                         });
                         if (toggles.length === 0) break;
-                        for (const btn of toggles.slice(0, 50)) {
-                            try {
-                                btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-                            } catch(e) {}
+                        for (const btn of toggles.slice(0, 25)) {
+                            if (routeDrift) break;
+                            await safeClick(btn);
                         }
                         await new Promise(r => setTimeout(r, 200));
                     }
 
-                    // 3. 侧边栏折叠目录全量展开 (Sidebar Accordion Unfolding - Mintlify / Docusaurus / VitePress)
-                    const sidebarContainers = Array.from(document.querySelectorAll("aside, nav[class*='sticky'], [class*='sidebar'], [class*='docSidebar'], nav[aria-label*='sidebar' i]"));
-                    for (const sb of sidebarContainers) {
-                        const expandBtns = Array.from(sb.querySelectorAll("button, [role='button'], [aria-expanded='false']"));
-                        for (const b of expandBtns.slice(0, 30)) {
-                            try { b.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })); } catch(e) {}
-                        }
-                    }
-                    await new Promise(r => setTimeout(r, 200));
+                    // 3. 侧边栏目录不点击：侧边栏的“分类头”往往兼作跳转按钮，
+                    //    点它会离开当前文档；而目录链接本身（即使折叠）已经从 DOM 里收集了。
+                    await new Promise(r => setTimeout(r, 100));
 
                     // 4. 扫描并提取通用活动细则/规则抽屉 (抽屉探针)
                     const ruleLinks = Array.from(document.querySelectorAll("a, button, span")).filter(
@@ -937,7 +1172,7 @@ class ScrapeEngine:
                     for (let i = 0; i < Math.min(ruleLinks.length, 10); i++) {
                         const btn = ruleLinks[i];
                         try {
-                            btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await safeClick(btn, 120);
                             await new Promise(r => setTimeout(r, 350));
                             const drawer = document.querySelector(".next-drawer, [role=\"dialog\"], .next-dialog, .ant-modal, .ant-drawer");
                             if (drawer && drawer.innerText) {
@@ -948,7 +1183,7 @@ class ScrapeEngine:
                             }
                             const close = document.querySelector(".next-drawer-close, .next-dialog-close, [aria-label=\"Close\"], .ant-modal-close");
                             if (close) {
-                                close.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                                await safeClick(close, 60);
                                 await new Promise(r => setTimeout(r, 100));
                             }
                         } catch(e) {}
@@ -977,7 +1212,7 @@ class ScrapeEngine:
                     if (uniqueScenarios.length > 0) {
                         for (const sc of uniqueScenarios.slice(0, 8)) {
                             try {
-                                sc.el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                                await safeClick(sc.el, 120);
                                 await new Promise(r => setTimeout(r, 200));
                             } catch(e) {}
                             const pres = Array.from(document.querySelectorAll("pre")).map(p => p.innerText.trim()).filter(s => s.length > 10);
@@ -993,39 +1228,72 @@ class ScrapeEngine:
                         }
                         // 重置回首个场景
                         try {
-                            uniqueScenarios[0].el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await safeClick(uniqueScenarios[0].el, 60);
                             await new Promise(r => setTimeout(r, 100));
                         } catch(e) {}
                     }
 
                     // 5. 多语言代码 Tab 遍历与全量采集 (cURL, Python, Go, Node.js, Java 等)
+                    // 各文档站的标签文案差异很大（"Python SDK" / "Node.js" / "cURL"），
+                    // 先归一成规范语言名再匹配，否则整套代码示例会被静默丢弃。
+                    const langAliases = {
+                        "curl": "cURL", "shell": "Shell", "bash": "Bash",
+                        "python": "Python", "python sdk": "Python", "python3": "Python",
+                        "go": "Go", "golang": "Go", "go sdk": "Go",
+                        "node.js": "Node.js", "nodejs": "Node.js", "node sdk": "Node.js",
+                        "java": "Java", "java sdk": "Java", "php": "PHP", "ruby": "Ruby",
+                        "c#": "C#", "csharp": "C#", "javascript": "JavaScript",
+                        "typescript": "TypeScript", "rust": "Rust"
+                    };
                     const langCodeSamples = [];
-                    const codeTabs = Array.from(document.querySelectorAll("[role='tab'], .openapi-tabs__tab, .tabs__item, button")).filter(t => {
-                        const txt = (t.innerText || "").trim().toUpperCase();
-                        return ["CURL", "PYTHON", "GO", "NODEJS", "JAVA", "PHP", "RUBY", "C#", "JAVASCRIPT", "TYPESCRIPT", "RUST", "BASH", "SHELL"].includes(txt);
+                    // 不依赖某一家框架的类名：ARIA tab、Docusaurus .tabs__item、OpenAPI 代码项、
+                    // 普通 button 都先收集，再用语言别名过滤，避免把导航按钮误当代码 tab。
+                    const codeTabs = Array.from(document.querySelectorAll(
+                        "[role='tab'], [aria-selected], [aria-controls], .tabs__item, [class*='tabs__item'], " +
+                        "[class*='tab-item'], [class*='tabItem'], [class*='code-tab'], [class*='codeTab'], " +
+                        "[class*='code-item'], [class*='codeItem'], [class*='openapi-tabs'], button"
+                    )).filter(t => {
+                        const txt = (t.innerText || "").trim().toLowerCase().replace(/\s+/g, " ");
+                        return Object.prototype.hasOwnProperty.call(langAliases, txt);
                     });
                     const seenLangs = new Set();
+                    const seenCode = new Set();
                     for (const t of codeTabs) {
-                        const lang = t.innerText.trim();
+                        const lang = langAliases[(t.innerText || "").trim().toLowerCase().replace(/\s+/g, " ")];
                         if (seenLangs.has(lang)) continue;
                         seenLangs.add(lang);
                         try {
-                            t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-                            await new Promise(r => setTimeout(r, 200));
-                            const rightPanel = document.querySelector(".openapi-right-panel__container, [class*='right-panel'], [class*='code-panel']") || document.body;
-                            const pres = Array.from(rightPanel.querySelectorAll("pre"));
-                            const activePre = pres[pres.length - 1];
-                            if (activePre && activePre.innerText.trim().length > 10) {
-                                langCodeSamples.push({
-                                    language: lang,
-                                    code: activePre.innerText.trim()
-                                });
+                            await safeClick(t, 150);
+                            await new Promise(r => setTimeout(r, 250));
+                            // 只在该 Tab 自己的容器里找**当前可见**的代码块：
+                            // 1) 不能取整页最后一个 pre（会错贴语言）；
+                            // 2) 不能依赖固定的 panel 类名（Docusaurus / Mintlify / 自研组件各不相同）。
+                            const listEl = t.closest("[role='tablist'], .tabs, [class*='tabs'], [class*='tab-list']");
+                            const rootEl = listEl ? (listEl.parentElement || listEl) : (t.parentElement || t);
+                            const visiblePres = (scope) => Array.from(scope.querySelectorAll("pre"))
+                                .filter(p => {
+                                    const r = p.getBoundingClientRect();
+                                    return r.width > 0 && r.height > 0;
+                                })
+                                .map(p => (p.innerText || "").trim())
+                                .filter(c => c.length > 10);
+                            let pres = visiblePres(rootEl);
+                            if (pres.length === 0) {
+                                // 面板被放在 tab 容器外时，退到最近的 section/article
+                                const section = t.closest("section, article, main");
+                                if (section) pres = visiblePres(section);
+                            }
+                            const code = pres.sort((a, b) => b.length - a.length)[0] || "";
+                            // 内容没变说明点击没切换成功，宁可不收也不能贴错语言
+                            if (code && !seenCode.has(code)) {
+                                seenCode.add(code);
+                                langCodeSamples.push({ language: lang, code });
                             }
                         } catch(e) {}
                     }
                     if (codeTabs.length > 0) {
                         try {
-                            codeTabs[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await safeClick(codeTabs[0], 60);
                             await new Promise(r => setTimeout(r, 100));
                         } catch(e) {}
                     }
@@ -1037,7 +1305,7 @@ class ScrapeEngine:
                     });
                     for (const vt of variantTabs.slice(0, 10)) {
                         try {
-                            vt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                            await safeClick(vt, 80);
                             await new Promise(r => setTimeout(r, 150));
                         } catch(e) {}
                     }
@@ -1141,8 +1409,31 @@ class ScrapeEngine:
                         }
                     });
 
+                    // 通用“可见主体”选择：SPA 常把旧路由的 <main> 留在 DOM 里，
+                    // 直接 querySelector("main") 会抽到隐藏的上一页（MiniMax 就抽成了
+                    // 「文生图」）。按可见面积 + 文本量打分，隐藏节点得 0 分。
+                    const pickMain = () => {
+                        const candidates = Array.from(document.querySelectorAll("main, [role='main'], article"));
+                        let best = null;
+                        let bestScore = -1;
+                        for (const el of candidates) {
+                            const rect = el.getBoundingClientRect();
+                            const style = getComputedStyle(el);
+                            const visible = rect.width > 0 && rect.height > 0 &&
+                                style.visibility !== "hidden" && style.display !== "none";
+                            const score = (visible ? rect.width * rect.height : 0) +
+                                (el.innerText || "").length * 50;
+                            if (score > bestScore) { bestScore = score; best = el; }
+                        }
+                        return best || document.body;
+                    };
+                    const mainEl = pickMain();
+
                     return {
-                        html: document.querySelector("main") ? document.querySelector("main").outerHTML : document.body.outerHTML,
+                        href: location.href,
+                        startHref: START_URL,
+                        drift: routeDrift || location.href !== START_URL ? location.href : "",
+                        html: routeDrift ? "" : mainEl.outerHTML,
                         drawers: extractedDrawers.join("\n\n"),
                         sidebar: asideEl ? asideEl.outerHTML : "",
                         pagination: paginationEl ? paginationEl.outerHTML : "",
@@ -1173,6 +1464,9 @@ class ScrapeEngine:
                         val = msg.get("result", {}).get("result", {}).get("value", {})
                         if isinstance(val, dict):
                             raw_html = val.get("html", "")
+                            final_href = val.get("href") or ""
+                            start_href = val.get("startHref") or ""
+                            drift_href = val.get("drift") or ""
                             drawers_text = val.get("drawers", "")
                             sidebar_html = val.get("sidebar", "")
                             pagination_html = val.get("pagination", "")
@@ -1184,6 +1478,18 @@ class ScrapeEngine:
                         else:
                             raw_html = str(val)
                         break
+
+            # 探索点击把页面带到了别的路由，且无法回退：宁可不交错误内容
+            if drift_href:
+                return ScrapeResult(
+                    success=False,
+                    url=options.url,
+                    error=(
+                        f"页面在探索阶段被站点路由带到 {drift_href}，已放弃提取以免保存错误内容。"
+                        f"可重试，或使用 `jeik open <URL>` + `jeik fetch --active-tab`。"
+                    ),
+                    elapsed_seconds=round(time.time() - t0, 2)
+                )
 
             # 多格式转换 (移交给 CPU 密集型多线程池并行处理，完全释放主事件循环)
             loop = asyncio.get_running_loop()
@@ -1205,25 +1511,23 @@ class ScrapeEngine:
                 header_links
             )
 
-            # 严格错误校验：如果提取出的 Markdown 与纯文本全为空，且 HTML 包含网络阻断错误
+            # 记录实际落地的 URL；探索阶段若发生路由漂移（不应再发生），这里能直接看到
+            if final_href:
+                metadata = transformed.setdefault("metadata", {})
+                metadata["final_url"] = final_href
+                if start_href and final_href != start_href:
+                    metadata["route_drift"] = f"{start_href} -> {final_href}"
+
+            # 严格错误校验：正文为空时必须报出**真实**原因。
+            # 旧实现无论什么原因都回退成 ERR_CONNECTION_TIMED_OUT，把「裸域名没写 scheme」
+            # 「被登录墙拦住」这类问题全部误报成网络不可达。
             markdown_content = transformed.get("markdown", "")
             if not markdown_content.strip():
-                # 检查浏览器是否遇到了网络连接重置或超时错误 (如 GFW 阻断、DNS 不可达)
-                error_match = None
-                if "net::ERR_" in raw_html:
-                    import re
-                    m = re.search(r'net::ERR_[A-Z_]+', raw_html)
-                    if m:
-                        error_match = m.group(0)
-                
-                err_msg = (
-                    f"Navigation failed or connection was reset ({error_match or 'net::ERR_CONNECTION_TIMED_OUT'}). "
-                    f"Target host is unreachable from your network environment."
-                )
+                detail = nav_error or net_error_code(page_state.get("errorText"))
                 return ScrapeResult(
                     success=False,
                     url=options.url,
-                    error=err_msg,
+                    error=navigation_failure_message(options.url, detail),
                     elapsed_seconds=round(time.time() - t0, 2)
                 )
 
@@ -1273,6 +1577,8 @@ class ScrapeEngine:
                         await client.get(f"{cdp_base}/json/close/{target_id}", timeout=2)
                 except Exception:
                     pass
+            elif dispose_context and cdp_base:
+                await self._dispose_context(cdp_base, dispose_context)
 
     async def scrape_urls_concurrent(
         self,
