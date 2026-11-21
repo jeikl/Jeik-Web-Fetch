@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-11-21
+
+### Fixed
+- **`jeik upgrade` always reported `1.0.0` as the current version**: `get_current_version()` did `from . import __version__` from inside `jeik_web_fetch.core`, which imports the `core` package (no such attribute); the swallowed `ImportError` fell back to `1.0.0`. Every upgrade therefore looked necessary, and the background updater could reinstall the same release every 10 minutes. It now reads `jeik_web_fetch.__version__` (falling back to distribution metadata), and the background loop attempts each remote version only once.
+- **`UnicodeDecodeError: 'gbk' codec can't decode ...` during `jeik upgrade`**: the installer subprocess was decoded with the Windows locale codec while the scripts emit UTF-8. `subprocess.run` now pins `encoding="utf-8", errors="replace"`.
+- The background updater now skips an auto-upgrade while the local daemon has a live CLI lease, so it cannot stop `serve` in the middle of an in-flight scrape.
+
+---
+
 ## [1.3.0] - 2026-11-21
 
 ### Added

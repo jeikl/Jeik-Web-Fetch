@@ -6,6 +6,15 @@
 
 ---
 
+## [1.3.1] - 2026-11-21
+
+### 修复 (Fixed)
+- **`jeik upgrade` 永远把当前版本显示成 1.0.0**：`get_current_version()` 在 `jeik_web_fetch.core` 里写的是 `from . import __version__`，实际导入的是 `core` 包（没有这个属性），异常被吞掉后回退到 `1.0.0`。导致每次升级都判定“需要升级”，后台更新线程还可能每 10 分钟重复安装同一版本。现改为读取 `jeik_web_fetch.__version__`（回退到发行包元数据），后台线程对同一远端版本只尝试一次。
+- **`jeik upgrade` 出现 `UnicodeDecodeError: 'gbk' codec can't decode ...`**：安装脚本输出 UTF-8，而子进程按 Windows 本地编码解码。现固定 `encoding="utf-8", errors="replace"`。
+- 守护存在活跃 CLI 租约时，后台自动更新不再执行，避免在抓取中途停掉 `serve`。
+
+---
+
 ## [1.3.0] - 2026-11-21
 
 ### 新增 (Added)
