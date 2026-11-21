@@ -214,3 +214,22 @@ def test_windows_installer_never_writes_the_running_exe():
     assert "jeik.exe.old-" in script, "备份名必须带唯一后缀，否则重命名会撞名失败"
     assert "move /Y" in script, "保留「退出后替换」的兜底路径"
     assert "$swapped" in script, "线程任一步都要显式校验结果"
+
+
+def test_current_version_comes_from_the_package():
+    """历史 BUG：`from . import __version__` 在 core 包里永远失败 → 兜底 1.0.0。"""
+    from jeik_web_fetch import __version__
+
+    assert AutoUpdater.get_current_version() == __version__.lstrip("v")
+    assert AutoUpdater.get_current_version() != "1.0.0"
+
+
+def test_background_updater_attempts_each_version_once():
+    """同一远端版本只尝试一次，避免版本探测异常时每 10 分钟重装一遍。"""
+    updater = AutoUpdater()
+
+    assert updater._should_auto_upgrade("1.3.0", "1.2.2") is True
+    updater._last_attempted_version = "1.3.0"
+    assert updater._should_auto_upgrade("1.3.0", "1.2.2") is False
+    assert updater._should_auto_upgrade("1.3.1", "1.2.2") is True
+    assert updater._should_auto_upgrade(None, "1.2.2") is False

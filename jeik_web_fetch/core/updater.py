@@ -71,6 +71,8 @@ class AutoUpdater:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._running: bool = False
+        # 后台线程对同一个远端版本只尝试一次，避免版本探测异常时反复重装
+        self._last_attempted_version: Optional[str] = None
 
     # 最近一次版本探测的真实失败原因；None 表示成功。
     last_error: Optional[str] = None
@@ -92,11 +94,20 @@ class AutoUpdater:
 
     @classmethod
     def get_current_version(cls) -> str:
+        # updater 位于 jeik_web_fetch.core，`from . import __version__` 取的是
+        # core 包（根本没有这个属性），异常被吞掉后永远返回兜底的 1.0.0，
+        # 于是每次 upgrade 都以为自己在升级，后台线程还会每 10 分钟重复装一遍。
         try:
-            from . import __version__
-            return __version__.lstrip("v")
+            from jeik_web_fetch import __version__
+
+            return str(__version__).lstrip("v")
         except Exception:
-            return "1.0.0"
+            try:
+                from importlib.metadata import version as _dist_version
+
+                return _dist_version("jeik-web-fetch").lstrip("v")
+            except Exception:
+                return "0.0.0"
 
     @classmethod
     def _pick_asset(cls, assets: list, plat: str, arch: str) -> Optional[str]:
@@ -263,6 +274,10 @@ class AutoUpdater:
         except Exception:
             return remote != current
 
+    def _should_auto_upgrade(self, remote: str, current: str) -> bool:
+        """后台线程对同一个远端版本只尝试一次，避免探测异常时反复重装。"""
+        return bool(remote) and remote != self._last_attempted_version and self.is_newer(remote, current)
+
     def perform_upgrade_and_restart(self, direct_cli: bool = False):
         """Wait until idle, execute the upgrade, and restart smoothly."""
         current_ver = self.get_current_version()
@@ -300,7 +315,15 @@ class AutoUpdater:
             else:
                 install_cmd = ["/bin/bash", "-c", "export JEIK_LANG='en'; curl -fsSL https://raw.githubusercontent.com/jeikl/Jeik-Web-Fetch/main/scripts/install.sh | bash"]
             
-            res = subprocess.run(install_cmd, capture_output=True, text=True)
+            res = subprocess.run(
+                install_cmd,
+                capture_output=True,
+                text=True,
+                # 安装脚本输出 UTF-8（含中文/emoji），Windows 默认按 GBK 解码
+                # 会在 reader 线程里抛 UnicodeDecodeError（无害但每次都刷栈）
+                encoding="utf-8",
+                errors="replace",
+            )
             if res.returncode == 0:
                 if direct_cli:
                     print(f"[✔] Upgrade complete! Successfully upgraded to v{remote_ver}.")
@@ -337,7 +360,18 @@ class AutoUpdater:
                         break
                     current_ver = self.get_current_version()
                     remote_ver, _ = self.check_remote_version()
-                    if remote_ver and self.is_newer(remote_ver, current_ver):
+                    if self._should_auto_upgrade(remote_ver, current_ver):
+                        # 守护正在被 CLI 借用时不要升级：安装器会停掉 serve，
+                        # 直接在别人的抓取中途把浏览器杀掉。
+                        if os.environ.get("JEIK_SERVE_PORT"):
+                            try:
+                                from . import daemon_client
+
+                                if daemon_client._lease_alive(int(os.environ["JEIK_SERVE_PORT"])):
+                                    continue
+                            except Exception:
+                                pass
+                        self._last_attempted_version = remote_ver
                         # Upgrade in background when idle
                         self.perform_upgrade_and_restart(direct_cli=False)
                 except Exception:
